@@ -82,6 +82,23 @@ if not exist "%BACKEND_DIR%\main.py" (
     exit /b 1
 )
 
+REM --- 4b. Tesseract OCR (optional) ---
+REM Used to auto-read the pixel size / scale bar burned into camera-export
+REM images. RodSizer still runs without it (manual calibration remains).
+where tesseract >nul 2>&1
+if %errorlevel% neq 0 (
+    if not exist "C:\Program Files\Tesseract-OCR\tesseract.exe" (
+        where winget >nul 2>&1
+        if !errorlevel! equ 0 (
+            echo [INFO] Installing Tesseract OCR for automatic scale-bar reading...
+            winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-source-agreements --accept-package-agreements >nul 2>&1
+        ) else (
+            echo [INFO] Tesseract OCR not found and winget unavailable - skipping.
+            echo        Auto scale-bar reading will be off; manual calibration still works.
+        )
+    )
+)
+
 REM --- 5. Setup Virtual Environment ---
 if exist "%VENV_PYTHON%" goto CHECK_ENV
 echo.

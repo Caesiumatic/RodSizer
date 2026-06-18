@@ -62,6 +62,17 @@ if ! command -v brew &>/dev/null; then
 fi
 info "Homebrew: $(brew --version | head -1)"
 
+# Tesseract OCR — used to auto-read the pixel size / scale bar burned into
+# camera-export images (JPG/PNG/TIF without embedded calibration). Optional:
+# RodSizer still runs without it, falling back to manual calibration.
+if ! command -v tesseract &>/dev/null; then
+    warn "Tesseract OCR not found. Installing for automatic scale-bar reading..."
+    brew install tesseract || warn "Tesseract install failed — auto-calibration will be disabled; manual calibration still works."
+fi
+if command -v tesseract &>/dev/null; then
+    info "Tesseract: $(tesseract --version 2>&1 | head -1)"
+fi
+
 # =============================================================================
 # STEP 2 — Python 3.11
 #
