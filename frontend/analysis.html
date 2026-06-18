@@ -589,18 +589,26 @@
             <div class="modal-section">
                 <h3>Analysis Instructions</h3>
                 <div class="modal-body">
-                    <p><strong>1. Image Review:</strong> center panel shows the processed particle image by default. Use the toggle button to switch to the binary mask view if needed.</p>
-                    <p><strong>2. Verify & Exclude:</strong> Check the <em>Ledger</em> (right panel). If a detection is
-                        incorrect (e.g., scale bar, dirt, not a rod), uncheck the <strong>'nanoparticles'</strong> box
-                        for that ID to exclude it.</p>
-                    <p><strong>3. Update:</strong> Press <strong>"Update Particles"</strong> to generate statistics
-                        and histogram plots based on valid selections.</p>
-                    <p><strong>4. Calibrate if needed:</strong> If embedded scale data is unavailable, use the manual scale tool to set the image calibration.</p>
-                    <p><strong>5. Save & Export:</strong></p>
+                    <p><strong>1. Review the image:</strong> the centre panel shows detected particles as boxes.
+                        Toggle <em>Show Binary Mask</em> to inspect segmentation, <em>Zoom</em> to look closer, and
+                        <em>Show IDs</em> to label particles (hidden by default so they don't cover small rods).</p>
+                    <p><strong>2. Check the scale:</strong> the calibration source is shown at the top right. If it is
+                        wrong or uncalibrated, click <em>Re-scale</em> and draw a line along the scale bar, or use the
+                        <em>Mask</em> slider to fine-tune how aggressively touching particles are separated.</p>
+                    <p><strong>3. Curate the selection</strong> (right panel <em>Ledger</em>) — exclude clumps, dirt,
+                        or anything that isn't a clean rod:</p>
                     <ul>
-                        <li><strong>Download Excel:</strong> Get the raw data for this specific image.</li>
-                        <li><strong>Save for Folder Analysis:</strong> Confirms these results for the aggregate folder
-                            report.</li>
+                        <li><strong>Click a particle on the image</strong> to deselect/reselect it (it flashes).</li>
+                        <li><strong>Sort</strong> any column (e.g. Area ↓) to bring big clumps to the top.</li>
+                        <li><strong>⋮ on a row</strong> bulk-selects/deselects everything above or below it.</li>
+                        <li><strong>Deselect outliers</strong> auto-removes statistical outliers (Tukey 1.5×IQR).</li>
+                    </ul>
+                    <p><strong>4. Update:</strong> press <strong>"Update Particles"</strong> to generate statistics and
+                        histograms from the kept particles.</p>
+                    <p><strong>5. Save &amp; export:</strong></p>
+                    <ul>
+                        <li><strong>Download Excel / PDF:</strong> raw data and a report for this image.</li>
+                        <li><strong>Add to Folder:</strong> confirms these results for the aggregate folder report.</li>
                     </ul>
                 </div>
             </div>
