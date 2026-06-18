@@ -260,6 +260,29 @@
             z-index: 1;
         }
 
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        th.sortable:hover {
+            background-color: #e9ecef;
+        }
+
+        th .sort-ind {
+            font-size: 10px;
+            color: #1e5eff;
+            font-weight: 700;
+        }
+
+        /* Compact the selection table so all six columns fit without sideways scroll. */
+        #dataTable th,
+        #dataTable td {
+            padding: 5px 6px;
+            font-size: 13px;
+        }
+
         .btn {
             background-color: #28a745;
             color: white;
@@ -543,10 +566,11 @@
                     <thead>
                         <tr>
                             <th><input type="checkbox" id="selectAll" checked onclick="toggleAll(this)"></th>
-                            <th>ID</th>
-                            <th id="lengthHeader">L (nm)</th>
-                            <th id="widthHeader">W (nm)</th>
-                            <th>AR</th>
+                            <th class="sortable" onclick="sortBy('id')"><span>ID</span><span class="sort-ind" id="ind-id"></span></th>
+                            <th class="sortable" onclick="sortBy('length')"><span id="lengthHeaderLabel">L (nm)</span><span class="sort-ind" id="ind-length"></span></th>
+                            <th class="sortable" onclick="sortBy('width')"><span id="widthHeaderLabel">W (nm)</span><span class="sort-ind" id="ind-width"></span></th>
+                            <th class="sortable" onclick="sortBy('ar')"><span>AR</span><span class="sort-ind" id="ind-ar"></span></th>
+                            <th class="sortable" onclick="sortBy('area')"><span id="areaHeaderLabel">Area (nm²)</span><span class="sort-ind" id="ind-area"></span></th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -747,45 +771,10 @@
             // Show calibration panel if needed
             showCalibrationPanel(data.calibration_info);
 
-            // Restore Selection from LocalStorage (Cache)
-            const excludedIds = JSON.parse(localStorage.getItem('excluded_' + imageId) || '[]');
-
-            // Table Population
-            const tbody = document.querySelector('#dataTable tbody');
-            tbody.innerHTML = '';
-            if (currentData.length > 0) {
-                currentData.forEach((rod, index) => {
-                    const isExcluded = excludedIds.includes(rod.id);
-
-                    const tr = document.createElement('tr');
-
-                    const cbTd = document.createElement('td');
-                    const cb = document.createElement('input');
-                    cb.type = 'checkbox';
-                    cb.className = 'rod-checkbox';
-                    cb.dataset.index = String(index);
-                    cb.checked = !isExcluded;
-                    cbTd.appendChild(cb);
-                    tr.appendChild(cbTd);
-
-                    [
-                        String(rod.id ?? ''),
-                        Number(rod.length_nm).toFixed(1),
-                        Number(rod.width_nm).toFixed(1),
-                        Number(rod.aspect_ratio).toFixed(1),
-                    ].forEach(val => {
-                        const td = document.createElement('td');
-                        td.textContent = val;
-                        tr.appendChild(td);
-                    });
-
-                    tbody.appendChild(tr);
-                });
-            }
-
-            document.querySelectorAll('.rod-checkbox').forEach(cb => {
-                cb.addEventListener('change', renderParticleOverlay);
-            });
+            // Table Population — selection is restored from cache inside the
+            // renderer, the chosen sort order is applied, and particle IDs are
+            // left untouched (sorting never renumbers rows).
+            renderSelectionTable();
 
             renderParticleOverlay();
 
@@ -936,8 +925,10 @@
 
         function updateMeasurementUnits() {
             const unit = currentIsPlaceholderCalibration ? 'px' : 'nm';
-            document.getElementById('lengthHeader').textContent = `L (${unit})`;
-            document.getElementById('widthHeader').textContent = `W (${unit})`;
+            document.getElementById('lengthHeaderLabel').textContent = `L (${unit})`;
+            document.getElementById('widthHeaderLabel').textContent = `W (${unit})`;
+            const areaLabel = document.getElementById('areaHeaderLabel');
+            if (areaLabel) areaLabel.textContent = currentIsPlaceholderCalibration ? 'Area (px²)' : 'Area (nm²)';
             document.getElementById('meanLengthLabel').textContent = `Mean L (${unit})`;
             document.getElementById('meanWidthLabel').textContent = `Mean W (${unit})`;
         }
@@ -945,6 +936,134 @@
         function toggleCalibrationPanel() {
             calibrationPanelOpen = !calibrationPanelOpen;
             showCalibrationPanel(currentCalibrationInfo);
+        }
+
+        // --- Selection table: sorting & rendering ------------------------------
+        // currentSort.key === null keeps the original (backend) order. Sorting
+        // only reorders the visible rows; each checkbox keeps data-index pointing
+        // at its currentData entry, so IDs and all index-based logic are intact.
+        let currentSort = { key: null, dir: 'desc' };
+
+        function rodAreaValue(rod) {
+            const px2 = Number(rod.area_px) || 0;
+            if (currentPixelSize > 0 && !currentIsPlaceholderCalibration) {
+                return px2 * currentPixelSize * currentPixelSize; // nm^2
+            }
+            return px2; // px^2 (uncalibrated)
+        }
+
+        function formatArea(v) {
+            // Keep the column narrow: exact for normal particles, compact (k/M)
+            // for large clumps whose nm² runs into the millions.
+            if (!isFinite(v)) return '-';
+            if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+            if (v >= 1e4) return (v / 1e3).toFixed(0) + 'k';
+            return Math.round(v).toLocaleString();
+        }
+
+        function captureExcludedIds() {
+            // Prefer the live checkbox state (so re-sorting preserves the current
+            // selection); fall back to the cached set on first render.
+            const checkboxes = document.querySelectorAll('.rod-checkbox');
+            if (checkboxes.length) {
+                const excluded = [];
+                checkboxes.forEach(cb => {
+                    const idx = parseInt(cb.dataset.index, 10);
+                    if (!cb.checked && currentData[idx]) excluded.push(currentData[idx].id);
+                });
+                return excluded;
+            }
+            return JSON.parse(localStorage.getItem('excluded_' + imageId) || '[]');
+        }
+
+        function sortKeyValue(rod) {
+            switch (currentSort.key) {
+                case 'area': return Number(rod.area_px) || 0;
+                case 'length': return Number(rod.length_nm) || 0;
+                case 'width': return Number(rod.width_nm) || 0;
+                case 'ar': return Number(rod.aspect_ratio) || 0;
+                case 'id': return Number(rod.id) || 0;
+                default: return 0;
+            }
+        }
+
+        function renderSelectionTable() {
+            const tbody = document.querySelector('#dataTable tbody');
+            if (!tbody) return;
+
+            const excludedSet = new Set(captureExcludedIds());
+
+            // Pair each rod with its ORIGINAL index, then sort the pairs only.
+            const order = currentData.map((rod, index) => ({ rod, index }));
+            if (currentSort.key) {
+                const dir = currentSort.dir === 'asc' ? 1 : -1;
+                order.sort((a, b) => {
+                    const va = sortKeyValue(a.rod);
+                    const vb = sortKeyValue(b.rod);
+                    if (va < vb) return -dir;
+                    if (va > vb) return dir;
+                    return a.index - b.index; // stable: fall back to original order
+                });
+            }
+
+            tbody.innerHTML = '';
+            order.forEach(({ rod, index }) => {
+                const tr = document.createElement('tr');
+
+                const cbTd = document.createElement('td');
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'rod-checkbox';
+                cb.dataset.index = String(index); // original index — never reassigned
+                cb.checked = !excludedSet.has(rod.id);
+                cb.addEventListener('change', () => { renderParticleOverlay(); syncSelectAllState(); });
+                cbTd.appendChild(cb);
+                tr.appendChild(cbTd);
+
+                [
+                    String(rod.id ?? ''),
+                    Number(rod.length_nm).toFixed(1),
+                    Number(rod.width_nm).toFixed(1),
+                    Number(rod.aspect_ratio).toFixed(1),
+                    formatArea(rodAreaValue(rod)),
+                ].forEach(val => {
+                    const td = document.createElement('td');
+                    td.textContent = val;
+                    tr.appendChild(td);
+                });
+
+                tbody.appendChild(tr);
+            });
+
+            updateSortIndicators();
+            syncSelectAllState();
+        }
+
+        function sortBy(key) {
+            if (currentSort.key === key) {
+                currentSort.dir = currentSort.dir === 'desc' ? 'asc' : 'desc';
+            } else {
+                currentSort.key = key;
+                currentSort.dir = (key === 'id') ? 'asc' : 'desc';
+            }
+            renderSelectionTable();
+        }
+
+        function updateSortIndicators() {
+            ['id', 'length', 'width', 'ar', 'area'].forEach(k => {
+                const el = document.getElementById('ind-' + k);
+                if (!el) return;
+                el.textContent = (currentSort.key === k)
+                    ? (currentSort.dir === 'asc' ? ' ▲' : ' ▼')
+                    : '';
+            });
+        }
+
+        function syncSelectAllState() {
+            const selectAll = document.getElementById('selectAll');
+            const all = document.querySelectorAll('.rod-checkbox');
+            if (!selectAll || !all.length) return;
+            selectAll.checked = Array.from(all).every(cb => cb.checked);
         }
 
         function toggleAll(source) {
@@ -1488,14 +1607,20 @@
 
             // Only toggle if click is reasonably close (within 50px of actual image coords)
             if (nearestIdx >= 0 && minDist < 80) {
-                const checkboxes = document.querySelectorAll('.rod-checkbox');
-                if (checkboxes[nearestIdx]) {
-                    checkboxes[nearestIdx].checked = !checkboxes[nearestIdx].checked;
+                // Look up by data-index (not DOM position) so this still hits the
+                // right particle when the table is sorted.
+                const checkbox = document.querySelector(`.rod-checkbox[data-index="${nearestIdx}"]`);
+                if (checkbox) {
+                    checkbox.checked = !checkbox.checked;
                     renderParticleOverlay();
-                    // Flash the table row briefly
-                    const row = checkboxes[nearestIdx].closest('tr');
-                    row.style.background = checkboxes[nearestIdx].checked ? '#d4edda' : '#f8d7da';
-                    setTimeout(() => { row.style.background = ''; }, 600);
+                    syncSelectAllState();
+                    // Flash the table row briefly and bring it into view in the list.
+                    const row = checkbox.closest('tr');
+                    if (row) {
+                        row.style.background = checkbox.checked ? '#d4edda' : '#f8d7da';
+                        setTimeout(() => { row.style.background = ''; }, 600);
+                        row.scrollIntoView({ block: 'nearest' });
+                    }
                 }
             }
         });
