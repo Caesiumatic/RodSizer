@@ -444,6 +444,40 @@
             border-color: #0056b3;
         }
 
+        .label-toggle-btn {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            padding: 5px 10px;
+            cursor: pointer;
+            z-index: 10;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .label-toggle-btn.active {
+            background: #007bff;
+            color: white;
+            border-color: #0056b3;
+        }
+
+        .mini-btn {
+            border: 1px solid #c0392b;
+            background: #fff;
+            color: #c0392b;
+            border-radius: 5px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .mini-btn:hover {
+            background: #c0392b;
+            color: #fff;
+        }
+
         .image-wrapper {
             position: relative;
             overflow: hidden;
@@ -596,6 +630,7 @@
             </p>
             <div class="image-container" style="position: relative; flex: 1; overflow: auto;">
                 <div class="image-wrapper" id="zoomWrapper">
+                    <button class="label-toggle-btn" onclick="toggleLabels()" id="labelToggleBtn">Hide IDs</button>
                     <button class="image-toggle-btn" onclick="toggleImageView()" id="imageToggleBtn">Show Binary Mask</button>
                     <button class="zoom-btn" onclick="toggleZoom()" id="zoomToggle">
                         <span style="font-size: 16px;">🔍</span> Zoom
@@ -639,6 +674,11 @@
             </div>
 
             <p class="table-hint">Click a column header to sort ↑/↓. Use <strong>⋮</strong> on a row for bulk select/deselect above &amp; below.</p>
+            <div style="margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <button type="button" id="deselectOutliersBtn" class="mini-btn" onclick="deselectOutliers()"
+                    title="Deselect particles whose length, width or aspect ratio are statistical outliers (Tukey 1.5×IQR) among the currently selected set">Deselect outliers</button>
+                <span id="outlierStatus" style="font-size: 11px; color: #6c757d;"></span>
+            </div>
             <div class="scrollable-table">
                 <table id="dataTable">
                     <thead>
@@ -1249,6 +1289,62 @@
             syncSelectAllState();
         }
 
+        // --- Auto-deselect statistical outliers (Tukey 1.5 x IQR) ------------
+        function _quantile(sorted, q) {
+            if (sorted.length === 0) return NaN;
+            const pos = (sorted.length - 1) * q;
+            const base = Math.floor(pos);
+            const rest = pos - base;
+            return sorted[base + 1] !== undefined
+                ? sorted[base] + rest * (sorted[base + 1] - sorted[base])
+                : sorted[base];
+        }
+
+        function setOutlierStatus(msg) {
+            const el = document.getElementById('outlierStatus');
+            if (el) el.textContent = msg;
+        }
+
+        function deselectOutliers() {
+            // Work on the currently-selected particles so it refines an existing
+            // selection (and respects prior manual exclusions).
+            const selected = Array.from(document.querySelectorAll('.rod-checkbox'))
+                .filter(cb => cb.checked)
+                .map(cb => ({ cb, rod: currentData[parseInt(cb.dataset.index, 10)] }))
+                .filter(x => x.rod);
+
+            if (selected.length < 8) {
+                setOutlierStatus('Need ≥ 8 selected particles to detect outliers.');
+                return;
+            }
+
+            // Tukey fences per metric. A particle is an outlier if length, width
+            // OR aspect ratio falls outside its fence.
+            const metrics = ['length_nm', 'width_nm', 'aspect_ratio'];
+            const fences = {};
+            metrics.forEach(key => {
+                const vals = selected.map(x => Number(x.rod[key])).filter(Number.isFinite).sort((a, b) => a - b);
+                const q1 = _quantile(vals, 0.25), q3 = _quantile(vals, 0.75), iqr = q3 - q1;
+                fences[key] = [q1 - 1.5 * iqr, q3 + 1.5 * iqr];
+            });
+
+            let removed = 0;
+            selected.forEach(({ cb, rod }) => {
+                const isOutlier = metrics.some(key => {
+                    const v = Number(rod[key]);
+                    const [lo, hi] = fences[key];
+                    return Number.isFinite(v) && (v < lo || v > hi);
+                });
+                if (isOutlier) { cb.checked = false; removed++; }
+            });
+
+            renderParticleOverlay();
+            syncSelectAllState();
+            setOutlierStatus(removed
+                ? `Deselected ${removed} outlier${removed > 1 ? 's' : ''} (L/W/AR, 1.5×IQR).`
+                : 'No statistical outliers found.');
+        }
+
         function scrollToSelection() {
             document.getElementById('content').scrollIntoView({ behavior: 'smooth' });
         }
@@ -1455,6 +1551,17 @@
             }));
         }
 
+        // Show/hide the ID numbers drawn over the image (they can obscure small
+        // particles). Drawn on the canvas overlay so the toggle is instant.
+        let showLabels = true;
+        function toggleLabels() {
+            showLabels = !showLabels;
+            const btn = document.getElementById('labelToggleBtn');
+            btn.textContent = showLabels ? 'Hide IDs' : 'Show IDs';
+            btn.classList.toggle('active', !showLabels);
+            renderParticleOverlay();
+        }
+
         // Two-blink flash on toggle, so a just-(de)selected box is easy to spot.
         const particleFlashes = new Map();   // currentData index -> start time (ms)
         const FLASH_DURATION_MS = 760;
@@ -1540,6 +1647,29 @@
                     ctx.restore();
                 }
             });
+
+            // ID numbers, drawn last (on top of all boxes) and only when enabled.
+            // Outlined white text instead of a filled pill so they obscure the
+            // particle underneath as little as possible.
+            if (showLabels) {
+                const fontPx = Math.max(13 * scale, 11);
+                ctx.font = `bold ${fontPx}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.lineWidth = Math.max(1, scale * 0.9);
+                ctx.lineJoin = 'round';
+                currentData.forEach((rod) => {
+                    const label = String(rod.id ?? '');
+                    if (!label) return;
+                    const x = rod.centroid_x, y = rod.centroid_y;
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+                    ctx.strokeText(label, x, y);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillText(label, x, y);
+                });
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
         }
 
         function setImageTransform(origin, scale) {
@@ -1770,7 +1900,23 @@
             imgContainer.style.marginBottom = '20px';
             imgContainer.style.height = '350px';
 
-            const img2 = document.getElementById('processedImage').cloneNode(true);
+            // Composite the base image with the live overlay (boxes, IDs and the
+            // current selection state) so the report matches what is on screen.
+            const img2 = document.createElement('img');
+            try {
+                const srcImg = document.getElementById('processedImage');
+                renderParticleOverlay();
+                const composite = document.createElement('canvas');
+                composite.width = srcImg.naturalWidth || particleOverlayCanvas.width;
+                composite.height = srcImg.naturalHeight || particleOverlayCanvas.height;
+                const cctx = composite.getContext('2d');
+                cctx.drawImage(srcImg, 0, 0, composite.width, composite.height);
+                cctx.drawImage(particleOverlayCanvas, 0, 0, composite.width, composite.height);
+                img2.src = composite.toDataURL('image/jpeg', 0.9);
+            } catch (e) {
+                console.error('Overlay composite failed, using plain image:', e);
+                img2.src = document.getElementById('processedImage').src;
+            }
             img2.style.maxHeight = '100%';
             img2.style.maxWidth = '80%';
             img2.style.objectFit = 'contain';
@@ -1832,38 +1978,58 @@
             const clickX = (e.clientX - rect.left) * scaleX;
             const clickY = (e.clientY - rect.top) * scaleY;
 
-            // Find nearest particle centroid
-            let minDist = Infinity;
-            let nearestIdx = -1;
+            // Primary hit test: is the click INSIDE a particle's box? Among any
+            // boxes that contain the point, pick the one whose centre is nearest.
+            // This makes "click inside the box" reliable regardless of box size.
+            let targetIdx = -1;
+            let bestDist = Infinity;
             currentData.forEach((rod, idx) => {
-                const dx = rod.centroid_x - clickX;
-                const dy = rod.centroid_y - clickY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < minDist) {
-                    minDist = dist;
-                    nearestIdx = idx;
+                if (pointInParticle(clickX, clickY, getParticleBoxPoints(rod))) {
+                    const d = Math.hypot(rod.centroid_x - clickX, rod.centroid_y - clickY);
+                    if (d < bestDist) { bestDist = d; targetIdx = idx; }
                 }
             });
 
-            // Only toggle if click is reasonably close (within 50px of actual image coords)
-            if (nearestIdx >= 0 && minDist < 80) {
+            // Fallback: nearest centroid within a small tolerance for near-misses.
+            if (targetIdx < 0) {
+                const tol = Math.max(40, img.naturalWidth * 0.015);
+                let minDist = Infinity;
+                currentData.forEach((rod, idx) => {
+                    const d = Math.hypot(rod.centroid_x - clickX, rod.centroid_y - clickY);
+                    if (d < minDist) { minDist = d; targetIdx = (d <= tol) ? idx : targetIdx; }
+                });
+            }
+
+            if (targetIdx >= 0) {
                 // Look up by data-index (not DOM position) so this still hits the
                 // right particle when the table is sorted.
-                const checkbox = document.querySelector(`.rod-checkbox[data-index="${nearestIdx}"]`);
+                const checkbox = document.querySelector(`.rod-checkbox[data-index="${targetIdx}"]`);
                 if (checkbox) {
                     checkbox.checked = !checkbox.checked;
                     syncSelectAllState();
-                    triggerParticleFlash(nearestIdx);   // two-blink flash on the box
-                    // Flash the table row briefly and bring it into view in the list.
+                    triggerParticleFlash(targetIdx);   // two-blink flash on the box
+                    // Briefly flash the matching table row WITHOUT scrolling to it,
+                    // so deselecting several while zoomed in doesn't jump the page.
                     const row = checkbox.closest('tr');
                     if (row) {
                         row.style.background = checkbox.checked ? '#d4edda' : '#f8d7da';
                         setTimeout(() => { row.style.background = ''; }, 600);
-                        row.scrollIntoView({ block: 'nearest' });
                     }
                 }
             }
         });
+
+        // Ray-casting point-in-polygon for the 4-corner rotated box.
+        function pointInParticle(x, y, pts) {
+            let inside = false;
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+                if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
 
         // --- Scale Bar Calibration ---
         let isDrawingLine = false;

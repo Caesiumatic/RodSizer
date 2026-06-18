@@ -39,7 +39,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = (BASE_DIR / "uploads").resolve()
 RESULTS_DIR = (BASE_DIR / "results").resolve()
 FRONTEND_DIR = (BASE_DIR / "frontend").resolve()
-RESULTS_SCHEMA_VERSION = 5
+RESULTS_SCHEMA_VERSION = 6
 
 # Upload limits
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB per file

@@ -607,37 +607,10 @@ def process_image(
             "contour": cand["contour"] # Keep for coloring
         })
         
-        # Draw Visualization - Clean thin outline + small ID label
-        rect_reconst = cv2.RotatedRect(cand["center"], (cand["width_nm"]/pixel_size_nm, cand["length_nm"]/pixel_size_nm), cand["angle"])
-        box = cv2.boxPoints(rect_reconst)
-        box = np.int32(box)
-
-        # Thin green outline only — no fill
-        cv2.drawContours(output_image, [box], 0, (0, 220, 0), 1, cv2.LINE_AA)
-
-        # ID label with background pill — sized to the image so it stays legible
-        # when the (often 4k) image is downscaled for display/download.
-        count = len(results)
-        label_text = str(count)
-        h_img, w_img = output_image.shape[:2]
-        font_scale = max(0.8, w_img / 2600.0)
-        thickness = max(2, int(round(font_scale * 1.4)))
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (tw, th), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
-        pad = max(3, int(font_scale * 4))
-
-        # Center the label on the particle centroid.
-        lx = int(cand["center"][0] - tw / 2)
-        ly = int(cand["center"][1] + th / 2)
-
-        # Background pill
-        cv2.rectangle(output_image,
-                      (lx - pad, ly - th - pad),
-                      (lx + tw + pad, ly + baseline + pad),
-                      (0, 0, 0), -1)
-        # White text
-        cv2.putText(output_image, label_text, (lx, ly),
-                    font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        # Boxes and ID numbers are NOT baked into the image. The frontend draws
+        # them as an interactive canvas overlay so they reflect the live
+        # selection state, can be toggled off when they obscure small particles,
+        # and stay crisp at any zoom. The saved image keeps only the scale bar.
 
     # Clean up source file name in calibration info for frontend
     def get_clean_filename(path: Path):
@@ -791,7 +764,7 @@ def process_image(
         sanitized_results.append(sanitized_res_item)
 
     output_data = {
-        "results_schema_version": 5,
+        "results_schema_version": 6,
         "binary_mask_tune": binary_mask_tune,
         "filename": clean_name,
         "data": sanitized_results,
