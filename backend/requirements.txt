@@ -8,6 +8,7 @@ ncempy
 matplotlib
 pandas
 Pillow
+pytesseract
 tifffile
 stardist
 tensorflow

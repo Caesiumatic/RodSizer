@@ -12,6 +12,8 @@ def _convert_to_nm(value, unit):
     """Convert a pixel size value from given unit to nanometers."""
     unit = unit.lower().strip()
     conversions = {
+        'pm': 1e-3, 'picometer': 1e-3, 'picometers': 1e-3,
+        'a': 0.1, 'å': 0.1, 'angstrom': 0.1, 'angstroms': 0.1, 'ang': 0.1,
         'nm': 1, 'nanometer': 1, 'nanometers': 1,
         'um': 1e3, 'µm': 1e3, 'micrometer': 1e3, 'micrometers': 1e3, 'micron': 1e3, 'microns': 1e3,
         'mm': 1e6, 'millimeter': 1e6, 'millimeters': 1e6,
@@ -401,6 +403,192 @@ def _read_tiff_pixel_size(image_path):
     return None, None
 
 
+# --- Burned-in scale detection (OCR) ----------------------------------------
+# Many camera exports (e.g. Velox/Ceta JPG/PNG) carry no embedded calibration
+# but print it into the image: a metadata footer ("Pixel size 156.1 pm",
+# "Fov 639.3 nm") and/or a drawn scale bar with a "200 nm" label. We read those
+# with Tesseract OCR. Everything degrades silently when Tesseract/pytesseract is
+# not installed, so the app keeps working (falling back to manual calibration).
+
+_PLAUSIBLE_NM_PER_PX = (0.001, 1000.0)  # sane TEM/SEM range
+
+
+def _tesseract_ready():
+    """Return True if pytesseract + the Tesseract binary are usable; point
+    pytesseract at common install locations (incl. Windows) when needed."""
+    import os
+    import shutil
+    try:
+        import pytesseract
+    except Exception:
+        return False
+
+    if shutil.which("tesseract"):
+        return True
+
+    for candidate in (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/usr/bin/tesseract",
+    ):
+        if os.path.exists(candidate):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            return True
+    return False
+
+
+def _ocr_text(gray, psm=6):
+    """OCR a grayscale crop, upscaling small crops so digits are legible."""
+    import pytesseract
+    if gray is None or gray.size == 0:
+        return ""
+    h, w = gray.shape[:2]
+    if max(h, w) < 2500:
+        gray = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+    try:
+        return pytesseract.image_to_string(gray, config=f"--psm {psm}")
+    except Exception as e:
+        print(f"[Scale] OCR error: {e}")
+        return ""
+
+
+def _plausible(nm_per_px):
+    lo, hi = _PLAUSIBLE_NM_PER_PX
+    return nm_per_px is not None and lo <= nm_per_px <= hi
+
+
+def _parse_footer_calibration(text, image_width):
+    """
+    Parse a metadata footer into nm/pixel. Two independent estimates:
+      A = an explicit pixel-size token in pm  (e.g. "156.1 pm")
+      B = field-of-view length / image width  (e.g. "639.3 nm" / 4096)
+    Prefer A when present; use B otherwise. When both exist they cross-check
+    each other, which guards against OCR misreads.
+    """
+    norm = " ".join(text.split())
+    tokens = re.findall(r'([\d]+\.?[\d]*)\s*(pm|nm|µm|um|microns?)\b', norm, re.IGNORECASE)
+    pm_vals, len_nm_vals = [], []
+    for value, unit in tokens:
+        u = unit.lower()
+        nm = _convert_to_nm(float(value), u)
+        if nm is None:
+            continue
+        if u == 'pm':
+            pm_vals.append(nm)
+        else:
+            len_nm_vals.append(nm)
+
+    a = pm_vals[0] if pm_vals else None              # explicit pixel size (pm)
+    # Field of view is the largest spatial length in the footer.
+    b = (max(len_nm_vals) / image_width) if (len_nm_vals and image_width) else None
+
+    if _plausible(a):
+        if b is not None and abs(a - b) / max(a, b) > 0.35:
+            # A and B disagree strongly — A is the labelled pixel size, keep it
+            # but note the mismatch for transparency.
+            return a, "ocr_pixel_size", f"OCR footer pixel size ({a:.4f} nm/px); FOV cross-check differs"
+        return a, "ocr_pixel_size", f"OCR footer pixel size: {a:.4f} nm/px"
+    if _plausible(b):
+        return b, "ocr_fov", f"OCR footer field-of-view / {image_width}px: {b:.4f} nm/px"
+    return None, None, None
+
+
+def _detect_scale_bar_line(img):
+    """
+    Tertiary fallback: find a drawn scale bar (a wide, thin bright/dark bar near
+    the bottom) and OCR its length label. Strict on purpose — a wrong scale is
+    worse than none — so it only returns a value when a unit label is actually
+    read next to a plausibly-sized bar.
+    """
+    h, w = img.shape[:2]
+    strip_top = int(h * 0.8)
+    bottom = img[strip_top:, :]
+
+    for invert in (False, True):
+        b = (255 - bottom) if invert else bottom
+        _, thresh = cv2.threshold(b, 200, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        best = None
+        best_w = 0
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            # Wide, thin, and not absurdly long (reject rod rows / artefacts).
+            if cw > max(40, w * 0.03) and ch < 25 and cw / max(ch, 1) > 6 and cw < w * 0.45:
+                if cw > best_w:
+                    best_w = cw
+                    best = (x, y + strip_top, cw, ch)
+        if not best:
+            continue
+
+        lx, ly, lw, lh = best
+        ty1, ty2 = max(0, ly - 90), min(h, ly + lh + 25)
+        tx1, tx2 = max(0, lx - 40), min(w, lx + lw + 140)
+        label_crop = img[ty1:ty2, tx1:tx2]
+        for psm in (7, 11):
+            label = _ocr_text(label_crop, psm=psm)
+            m = re.search(r'([\d]+\.?[\d]*)\s*(pm|nm|µm|um|microns?)\b',
+                          " ".join(label.split()), re.IGNORECASE)
+            if not m:
+                continue
+            nm = _convert_to_nm(float(m.group(1)), m.group(2))
+            if nm and lw > 0:
+                ps = nm / lw
+                if _plausible(ps):
+                    return ps, {
+                        "method": "ocr_scale_bar",
+                        "scale_bar_coords": (lx, ly + lh // 2, lx + lw, ly + lh // 2),
+                        "scale_bar_length_nm": nm,
+                        "scale_bar_length_px": lw,
+                        "description": f"OCR scale bar: {m.group(1)} {m.group(2)} over {lw}px",
+                    }
+    return None, {}
+
+
+def detect_burned_in_scale(image_path: Path):
+    """
+    Auto-calibrate from burned-in text/scale bar in a raster image (JPG/PNG/TIF).
+    Returns (pixel_size_nm, calibration_info) or (None, {}). Safe no-op without
+    Tesseract.
+    """
+    if not _tesseract_ready():
+        return None, {}
+
+    try:
+        img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None, {}
+        h, w = img.shape[:2]
+
+        # 1 & 2. Metadata footer text (pixel size / field of view).
+        try:
+            from autodetect_utils import _detect_footer_top
+            footer_top = _detect_footer_top(img)
+        except Exception:
+            footer_top = h
+        # OCR the detected footer band; if footer detection found nothing, fall
+        # back to a single generous bottom slice. One OCR pass either way.
+        footer_region = img[footer_top:, :] if footer_top < h else img[int(h * 0.88):, :]
+        ps, method, desc = _parse_footer_calibration(_ocr_text(footer_region, psm=6), w)
+        if ps is not None:
+            print(f"[Scale] {desc}")
+            return ps, {"method": method, "pixel_size_nm": ps, "description": desc,
+                        "scale_bar_coords": None, "scale_bar_length_nm": None,
+                        "scale_bar_length_px": None}
+
+        # 3. Drawn scale bar + label.
+        ps, info = _detect_scale_bar_line(img)
+        if ps is not None:
+            print(f"[Scale] {info.get('description')}")
+            return ps, info
+    except Exception as e:
+        print(f"[Scale] burned-in detection failed: {e}")
+
+    return None, {}
+
+
 def get_pixel_size(image_path: Path):
     """
     Extract pixel size (nm/pixel) from image metadata or scale bar.
@@ -438,6 +626,20 @@ def get_pixel_size(image_path: Path):
         import traceback
         traceback.print_exc()
 
+    # 2. Fallback: read calibration burned into the image (footer text / scale
+    # bar) via OCR. Only when metadata gave nothing, so calibrated formats are
+    # not slowed down.
+    description = None
+    if pixel_size is None:
+        ocr_ps, ocr_info = detect_burned_in_scale(image_path)
+        if ocr_ps is not None:
+            pixel_size = ocr_ps
+            method = ocr_info.get("method", "ocr")
+            scale_bar_coords = ocr_info.get("scale_bar_coords")
+            scale_bar_length_nm = ocr_info.get("scale_bar_length_nm")
+            best_line_width_px = ocr_info.get("scale_bar_length_px")
+            description = ocr_info.get("description")
+
     if pixel_size is None:
         method = "uncalibrated"
         print(f"[Scale] No calibration found for {image_path.name}")
@@ -450,6 +652,8 @@ def get_pixel_size(image_path: Path):
         "scale_bar_length_nm": scale_bar_length_nm,
         "scale_bar_length_px": best_line_width_px if scale_bar_coords else None
     }
+    if description:
+        calibration_info["description"] = description
     if pixel_size is None:
         calibration_info["warning"] = "No calibration found. Measurements are using a placeholder scale until you calibrate manually."
 

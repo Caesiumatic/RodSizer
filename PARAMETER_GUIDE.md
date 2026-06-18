@@ -13,6 +13,16 @@ The current backend uses an AutoDetect-mNP-style workflow in `backend/processing
 5. `Measurement` uses `minAreaRect` to estimate rod length and width, then derives shape descriptors per particle.
 6. `Label overlay` assigns each detected particle its own colour (`_make_label_overlay`) so the per-particle segmentation can be inspected directly.
 
+## Calibration (pixel size) sources
+
+RodSizer resolves nm/pixel in this order; the first that succeeds wins:
+
+1. **Manual override** (`manual_pixel_size`) — or the in-app "draw a line" / numeric calibration.
+2. **Linked metadata file** — a matching `.dm3/.dm4/.emd` sharing the image's base name.
+3. **Embedded metadata** — Gatan/DM, Velox/EMD, OME-TIFF, FEI/Thermo and ImageJ TIFF tags.
+4. **Burned-in OCR (new)** — for camera exports (JPG/PNG/TIF) with no metadata, RodSizer OCRs the bottom metadata footer for `Pixel size … pm/nm` (cross-checked against `Fov … / image width`), and falls back to a drawn scale bar plus its `… nm` label. Requires the Tesseract binary (installed automatically by the launchers); if it is missing, this step is skipped silently.
+5. **Uncalibrated placeholder** — `1.0 nm/px`, flagged `is_placeholder`, so measurements stay in a known-provisional state until you calibrate.
+
 ## Parameters Currently In Use
 
 | Parameter | Current Value / Behavior | What it does |
