@@ -267,20 +267,97 @@
         }
 
         th.sortable:hover {
-            background-color: #e9ecef;
+            background-color: #dbe7ff;
         }
 
+        /* Always-visible sort affordance: a dim arrow on every sortable column,
+           highlighted (bold, accent colour) on the active sort column. */
         th .sort-ind {
-            font-size: 10px;
-            color: #1e5eff;
+            font-size: 11px;
+            margin-left: 3px;
+            color: #b9c2cc;
             font-weight: 700;
         }
 
-        /* Compact the selection table so all six columns fit without sideways scroll. */
+        th .sort-ind.active {
+            color: #1e5eff;
+        }
+
+        .table-hint {
+            font-size: 11px;
+            color: #6c757d;
+            margin: 0 0 6px 0;
+            line-height: 1.4;
+        }
+
+        /* Compact the selection table so all columns fit without sideways scroll. */
         #dataTable th,
         #dataTable td {
             padding: 5px 6px;
             font-size: 13px;
+        }
+
+        #dataTable th.actions-col,
+        #dataTable td.actions-col {
+            padding: 0 2px;
+            width: 22px;
+            text-align: center;
+        }
+
+        .row-menu-btn {
+            border: none;
+            background: transparent;
+            color: #adb5bd;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+
+        #dataTable tbody tr:hover .row-menu-btn {
+            color: #1e5eff;
+        }
+
+        .row-menu-btn:hover {
+            background: #e9ecef;
+            color: #1e5eff;
+        }
+
+        .row-menu {
+            position: fixed;
+            z-index: 1000;
+            background: #fff;
+            border: 1px solid #cfd6dd;
+            border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+            padding: 4px;
+            min-width: 188px;
+        }
+
+        .row-menu-title {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #8a949e;
+            padding: 4px 8px 2px;
+        }
+
+        .row-menu button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            border: none;
+            background: transparent;
+            padding: 7px 8px;
+            font-size: 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            color: #212529;
+        }
+
+        .row-menu button:hover {
+            background: #eef3ff;
         }
 
         .btn {
@@ -561,20 +638,31 @@
                 </div>
             </div>
 
+            <p class="table-hint">Click a column header to sort ↑/↓. Use <strong>⋮</strong> on a row for bulk select/deselect above &amp; below.</p>
             <div class="scrollable-table">
                 <table id="dataTable">
                     <thead>
                         <tr>
-                            <th><input type="checkbox" id="selectAll" checked onclick="toggleAll(this)"></th>
+                            <th><input type="checkbox" id="selectAll" checked onclick="toggleAll(this)" title="Select / deselect all"></th>
                             <th class="sortable" onclick="sortBy('id')"><span>ID</span><span class="sort-ind" id="ind-id"></span></th>
                             <th class="sortable" onclick="sortBy('length')"><span id="lengthHeaderLabel">L (nm)</span><span class="sort-ind" id="ind-length"></span></th>
                             <th class="sortable" onclick="sortBy('width')"><span id="widthHeaderLabel">W (nm)</span><span class="sort-ind" id="ind-width"></span></th>
                             <th class="sortable" onclick="sortBy('ar')"><span>AR</span><span class="sort-ind" id="ind-ar"></span></th>
                             <th class="sortable" onclick="sortBy('area')"><span id="areaHeaderLabel">Area (nm²)</span><span class="sort-ind" id="ind-area"></span></th>
+                            <th class="actions-col"></th>
                         </tr>
                     </thead>
                     <tbody></tbody>
                 </table>
+            </div>
+
+            <!-- Floating per-row bulk-selection menu (positioned in JS) -->
+            <div id="rowMenu" class="row-menu hidden">
+                <div class="row-menu-title">Bulk from this row</div>
+                <button type="button" data-act="sel-above">☑ Select this &amp; above</button>
+                <button type="button" data-act="desel-above">☐ Deselect this &amp; above</button>
+                <button type="button" data-act="sel-below">☑ Select this &amp; below</button>
+                <button type="button" data-act="desel-below">☐ Deselect this &amp; below</button>
             </div>
 
             <button id="analyzeBtn" class="btn btn-primary" onclick="calculateAnalysis()">Update Particles ↓</button>
@@ -1032,6 +1120,18 @@
                     tr.appendChild(td);
                 });
 
+                const actTd = document.createElement('td');
+                actTd.className = 'actions-col';
+                const menuBtn = document.createElement('button');
+                menuBtn.type = 'button';
+                menuBtn.className = 'row-menu-btn';
+                menuBtn.textContent = '⋮';
+                menuBtn.title = 'Bulk select/deselect from this row';
+                menuBtn.dataset.index = String(index);
+                menuBtn.addEventListener('click', (e) => openRowMenu(e, index));
+                actTd.appendChild(menuBtn);
+                tr.appendChild(actTd);
+
                 tbody.appendChild(tr);
             });
 
@@ -1053,9 +1153,13 @@
             ['id', 'length', 'width', 'ar', 'area'].forEach(k => {
                 const el = document.getElementById('ind-' + k);
                 if (!el) return;
-                el.textContent = (currentSort.key === k)
-                    ? (currentSort.dir === 'asc' ? ' ▲' : ' ▼')
-                    : '';
+                if (currentSort.key === k) {
+                    el.textContent = currentSort.dir === 'asc' ? '▲' : '▼';
+                    el.classList.add('active');
+                } else {
+                    el.textContent = '↕';   // dim hint that the column is sortable
+                    el.classList.remove('active');
+                }
             });
         }
 
@@ -1066,12 +1170,83 @@
             selectAll.checked = Array.from(all).every(cb => cb.checked);
         }
 
+        // --- Bulk selection (above / below a row, in current display order) ----
+        // "above"/"below" follow the visible (sorted) order and include the anchor
+        // row itself, so e.g. sort by Area ↓ then "Deselect this & above" clears a
+        // whole block of clumps in one click. IDs are never touched.
+        function applyBulkSelection(anchorIndex, direction, checked) {
+            const rows = Array.from(document.querySelectorAll('#dataTable tbody tr'));
+            const anchorPos = rows.findIndex(tr => {
+                const cb = tr.querySelector('.rod-checkbox');
+                return cb && cb.dataset.index === String(anchorIndex);
+            });
+            if (anchorPos < 0) return;
+            rows.forEach((tr, pos) => {
+                const inRange = direction === 'above' ? pos <= anchorPos : pos >= anchorPos;
+                if (!inRange) return;
+                const cb = tr.querySelector('.rod-checkbox');
+                if (cb) cb.checked = checked;
+            });
+            renderParticleOverlay();
+            syncSelectAllState();
+        }
+
+        let rowMenuAnchorIndex = null;
+
+        function openRowMenu(event, index) {
+            event.stopPropagation();
+            const menu = document.getElementById('rowMenu');
+            if (!menu) return;
+            rowMenuAnchorIndex = index;
+            menu.classList.remove('hidden');
+            const btnRect = event.currentTarget.getBoundingClientRect();
+            const mw = menu.offsetWidth || 190;
+            const mh = menu.offsetHeight || 140;
+            let left = btnRect.right - mw;
+            let top = btnRect.bottom + 4;
+            if (top + mh > window.innerHeight - 8) top = btnRect.top - mh - 4; // flip up
+            menu.style.left = `${Math.max(8, left)}px`;
+            menu.style.top = `${Math.max(8, top)}px`;
+        }
+
+        function closeRowMenu() {
+            const menu = document.getElementById('rowMenu');
+            if (menu) menu.classList.add('hidden');
+            rowMenuAnchorIndex = null;
+        }
+
+        (function initRowMenu() {
+            const menu = document.getElementById('rowMenu');
+            if (!menu) return;
+            menu.querySelectorAll('button[data-act]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (rowMenuAnchorIndex === null) return;
+                    const act = btn.dataset.act;                  // e.g. "desel-above"
+                    const checked = act.startsWith('sel-');
+                    const direction = act.endsWith('above') ? 'above' : 'below';
+                    applyBulkSelection(rowMenuAnchorIndex, direction, checked);
+                    closeRowMenu();
+                });
+            });
+            document.addEventListener('click', (e) => {
+                if (!menu.classList.contains('hidden') &&
+                    !menu.contains(e.target) &&
+                    !e.target.classList.contains('row-menu-btn')) {
+                    closeRowMenu();
+                }
+            });
+            window.addEventListener('resize', closeRowMenu);
+            const scrollBox = document.querySelector('.scrollable-table');
+            if (scrollBox) scrollBox.addEventListener('scroll', closeRowMenu);
+        })();
+
         function toggleAll(source) {
             const checkboxes = document.querySelectorAll('.rod-checkbox');
             for (let i = 0; i < checkboxes.length; i++) {
                 checkboxes[i].checked = source.checked;
             }
             renderParticleOverlay();
+            syncSelectAllState();
         }
 
         function scrollToSelection() {
