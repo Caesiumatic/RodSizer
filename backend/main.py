@@ -175,17 +175,25 @@ def _find_input_and_calibration_source(image_id: str):
 # Serve Frontend
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
+# The frontend HTML is edited in place and updated often. Tell the browser to
+# always revalidate so a code update is never hidden behind a stale cached page.
+_NO_CACHE_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+
+def _frontend_page(name: str) -> FileResponse:
+    return FileResponse(FRONTEND_DIR / name, headers=_NO_CACHE_HEADERS)
+
 @app.get("/")
 async def read_index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return _frontend_page("index.html")
 
 @app.get("/analysis")
 async def read_analysis():
-    return FileResponse(FRONTEND_DIR / "analysis.html")
+    return _frontend_page("analysis.html")
 
 @app.get("/folder_analysis")
 async def read_folder_analysis():
-    return FileResponse(FRONTEND_DIR / "folder_analysis.html")
+    return _frontend_page("folder_analysis.html")
 
 # --- Folder Management ---
 
