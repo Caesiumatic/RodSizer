@@ -40,8 +40,8 @@ Segmentation follows the AutoDetect-mNP approach (*JACS Au* **2021**, *1*,
 dense clumps and OCR scale-bar calibration for un-tagged camera exports.
 
 ## Contributors
-- **Shi Chen** — Murphy Group, UIUC (lead developer)
-- **Arda Turk** — Murphy Group, UIUC
+- Shi Chen — Murphy Group, UIUC
+- Arda Turk — Murphy Group, UIUC
 - Built with assistance from Claude and ChatGPT.
 
 Group website: https://murphy-group.chemistry.illinois.edu/
