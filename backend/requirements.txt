@@ -10,7 +10,15 @@ pandas
 Pillow
 pytesseract
 tifffile
-stardist
-tensorflow
 openpyxl
 h5py
+
+# --- Heavy deps kept for possible future ML detection (NOT used right now) ---
+# stardist + tensorflow are the main reason the FIRST-TIME setup is slow (~5-10
+# min) and large (~1 GB+): they pull in a full TensorFlow build. The current
+# detection pipeline is K-means + distance-transform watershed and does NOT use
+# them (they are imported nowhere in the hot path). They are kept on purpose in
+# case StarDist-based detection is added later. Remove these two lines if you
+# want a much faster, smaller install and don't plan to use StarDist.
+stardist
+tensorflow
