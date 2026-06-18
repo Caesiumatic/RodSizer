@@ -615,23 +615,25 @@ def process_image(
         # Thin green outline only — no fill
         cv2.drawContours(output_image, [box], 0, (0, 220, 0), 1, cv2.LINE_AA)
 
-        # Small ID label with background pill
+        # ID label with background pill — sized to the image so it stays legible
+        # when the (often 4k) image is downscaled for display/download.
         count = len(results)
         label_text = str(count)
         h_img, w_img = output_image.shape[:2]
-        font_scale = max(0.3, min(0.5, w_img / 3000.0))
-        thickness = 1
+        font_scale = max(0.8, w_img / 2600.0)
+        thickness = max(2, int(round(font_scale * 1.4)))
         font = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+        pad = max(3, int(font_scale * 4))
 
-        # Position: top-left corner of bounding box
+        # Center the label on the particle centroid.
         lx = int(cand["center"][0] - tw / 2)
-        ly = int(cand["center"][1] - th / 2)
+        ly = int(cand["center"][1] + th / 2)
 
         # Background pill
         cv2.rectangle(output_image,
-                      (lx - 2, ly - th - 2),
-                      (lx + tw + 2, ly + baseline + 2),
+                      (lx - pad, ly - th - pad),
+                      (lx + tw + pad, ly + baseline + pad),
                       (0, 0, 0), -1)
         # White text
         cv2.putText(output_image, label_text, (lx, ly),
@@ -789,7 +791,7 @@ def process_image(
         sanitized_results.append(sanitized_res_item)
 
     output_data = {
-        "results_schema_version": 4,
+        "results_schema_version": 5,
         "binary_mask_tune": binary_mask_tune,
         "filename": clean_name,
         "data": sanitized_results,
