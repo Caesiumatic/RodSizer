@@ -630,7 +630,7 @@
             </p>
             <div class="image-container" style="position: relative; flex: 1; overflow: auto;">
                 <div class="image-wrapper" id="zoomWrapper">
-                    <button class="label-toggle-btn" onclick="toggleLabels()" id="labelToggleBtn">Hide IDs</button>
+                    <button class="label-toggle-btn active" onclick="toggleLabels()" id="labelToggleBtn">Show IDs</button>
                     <button class="image-toggle-btn" onclick="toggleImageView()" id="imageToggleBtn">Show Binary Mask</button>
                     <button class="zoom-btn" onclick="toggleZoom()" id="zoomToggle">
                         <span style="font-size: 16px;">🔍</span> Zoom
@@ -1552,8 +1552,9 @@
         }
 
         // Show/hide the ID numbers drawn over the image (they can obscure small
-        // particles). Drawn on the canvas overlay so the toggle is instant.
-        let showLabels = true;
+        // particles). Hidden by default; drawn on the canvas overlay so the
+        // toggle is instant.
+        let showLabels = false;
         function toggleLabels() {
             showLabels = !showLabels;
             const btn = document.getElementById('labelToggleBtn');
