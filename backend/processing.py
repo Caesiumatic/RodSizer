@@ -7,7 +7,7 @@ import pandas as pd
 import math
 from scipy import ndimage as ndi
 import ncempy.io as nio
-from autodetect_utils import image_kmeans, ruecs, dilmarkers
+from autodetect_utils import image_kmeans, ruecs, dilmarkers, split_clump
 
 def save_results_to_excel(results, output_path):
     """
@@ -408,8 +408,7 @@ def process_image(
 
     min_area_nm2 = 30
     min_size_px = max(500, int(min_area_nm2 / (pixel_size_nm * pixel_size_nm))) if pixel_size_nm else 500
-    max_ruecs_area_px = max(15_000, min(40_000, int(binary.size * 0.0015)))
-    max_ruecs_crop_px = max(120_000, min(400_000, int(binary.size * 0.015)))
+    min_marker_area = max(1, min_size_px // 4)
     split_labels = np.zeros_like(labels, dtype=np.int32)
     next_label = 1
 
@@ -418,22 +417,24 @@ def process_image(
             continue
 
         minr, minc, maxr, maxc = region.bbox
+        label_crop = split_labels[minr:maxr, minc:maxc]
 
-        # Solidity > 0.9 is treated as a single rod ("simple"); lower values go to rUECS splitting.
+        # Solidity > 0.9 is treated as a single rod ("simple"); lower values are
+        # treated as clumps and separated with a distance-transform watershed
+        # (autodetect_utils.split_clump). Watershed keeps a single elongated rod
+        # whole while breaking touching rods apart, and is far faster than the
+        # recursive rUECS erosion it replaces.
         if region.solidity > 0.9:
-            split_labels[minr:maxr, minc:maxc][region.image] = next_label
+            label_crop[region.image] = next_label
             next_label += 1
         else:
-            crop = region.image
-            if region.area > max_ruecs_area_px or crop.size > max_ruecs_crop_px:
-                split_masks = _fast_split_large_component(crop, min_size_px)
-            else:
-                markers = ruecs(crop, area_threshold=max(1, min_size_px / 4))
-                split_masks, _ = dilmarkers(markers, crop.shape)
-
-            label_crop = split_labels[minr:maxr, minc:maxc]
+            split_masks = split_clump(
+                region.image,
+                min_marker_area,
+                separation_strength=binary_mask_tune,
+            )
             for d_mask in split_masks:
-                label_crop[d_mask.astype(bool)] = next_label
+                label_crop[d_mask] = next_label
                 next_label += 1
 
     labels = split_labels
@@ -443,111 +444,107 @@ def process_image(
     # 5. Measurement & Filtering
     candidates = []
     output_image = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    
+
     # Create a mask for NMS
     occupied_mask = np.zeros(binary.shape, dtype=np.uint8)
-    
-    # Get contours from labels for minAreaRect
-    # We can iterate through regionprops to get the label, then find contours for that label
-    # Or simpler: iterate unique labels
-    unique_labels = np.unique(labels)
-    
-    for label_idx in unique_labels:
-        if label_idx == 0: continue
-        
-        # Create a mask for this object
-        obj_mask = (labels == label_idx).astype(np.uint8)
-        
-        # Check if touching border
-        # Fast check: look at pixels on the border of the image
-        h, w = labels.shape
-        if np.any(obj_mask[0, :]) or np.any(obj_mask[h-1, :]) or \
-           np.any(obj_mask[:, 0]) or np.any(obj_mask[:, w-1]):
+
+    # Iterate labels via their bounding boxes instead of scanning the whole image
+    # for every label. find_objects returns one slice per label (index = label-1),
+    # so all per-object work happens on a small crop — O(total object area) rather
+    # than O(n_labels x image_size).
+    h_img, w_img = labels.shape
+    object_slices = ndi.find_objects(labels)
+
+    for label_idx, sl in enumerate(object_slices, start=1):
+        if sl is None:
             continue
-            
-        # Find contours
+
+        row_slice, col_slice = sl
+        minr, minc = row_slice.start, col_slice.start
+        maxr, maxc = row_slice.stop, col_slice.stop
+
+        obj_mask = (labels[row_slice, col_slice] == label_idx).astype(np.uint8)
+
+        # Skip objects touching the image border (cannot be measured reliably).
+        if ((minr == 0 and obj_mask[0, :].any()) or
+                (maxr == h_img and obj_mask[-1, :].any()) or
+                (minc == 0 and obj_mask[:, 0].any()) or
+                (maxc == w_img and obj_mask[:, -1].any())):
+            continue
+
+        # Find contours (in crop-local coordinates).
         contours, _ = cv2.findContours(obj_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours: continue
-        
-        cnt = contours[0]
-        area_px = cv2.contourArea(cnt)
-        
+        if not contours:
+            continue
+
+        cnt_local = max(contours, key=cv2.contourArea)
+        area_px = cv2.contourArea(cnt_local)
+
         if area_px < min_size_px:
             continue
-            
+
         # Fit Rotated Rectangle (User preference for "edges")
-        rect = cv2.minAreaRect(cnt)
+        rect = cv2.minAreaRect(cnt_local)
         (center, (w_rect, h_rect), angle_rect) = rect
-        
+
         # Normalize width/height (Length is always the longer dimension)
         if w_rect < h_rect:
             width_px = w_rect
             length_px = h_rect
-            # Angle logic for minAreaRect: 
-            # OpenCV 4.5+: angle is in [0, 90). 
+            # Angle logic for minAreaRect:
+            # OpenCV 4.5+: angle is in [0, 90).
             # We just want the orientation of the major axis.
             angle = angle_rect
         else:
             width_px = h_rect
             length_px = w_rect
             angle = angle_rect + 90
-            
+
         if width_px == 0: continue
 
         # Calculate Shape Descriptors
         # 1. Area
         # area_px
-        
+
         # 2. Aspect Ratio (from Rectangle)
         length_nm = length_px * pixel_size_nm
         width_nm = width_px * pixel_size_nm
         aspect_ratio = length_nm / width_nm
-        
+
         # 3. Solidity = Area / Convex Area
-        hull = cv2.convexHull(cnt)
+        hull = cv2.convexHull(cnt_local)
         convex_area = cv2.contourArea(hull)
         solidity = area_px / convex_area if convex_area > 0 else 0
-        
+
         # 4. Convexity = Convex Perimeter / Perimeter
-        perimeter = cv2.arcLength(cnt, True)
+        perimeter = cv2.arcLength(cnt_local, True)
         hull_perimeter = cv2.arcLength(hull, True)
         convexity = hull_perimeter / perimeter if perimeter > 0 else 0
-        
+
         # 5. Circularity
         circularity = (4 * np.pi * area_px) / (perimeter ** 2) if perimeter > 0 else 0
-        
+
         # 6. Eccentricity (Keep using Ellipse fit for this standard definition)
-        if len(cnt) >= 5:
-            (_, (w_ell, h_ell), _) = cv2.fitEllipse(cnt)
+        if len(cnt_local) >= 5:
+            (_, (w_ell, h_ell), _) = cv2.fitEllipse(cnt_local)
             major_axis = max(w_ell, h_ell)
             minor_axis = min(w_ell, h_ell)
             eccentricity = np.sqrt(1 - (minor_axis / major_axis) ** 2) if major_axis > 0 else 0
         else:
             eccentricity = 0
-            
+
         volume_nm3 = calculate_volume(length_nm, width_nm)
-        
-        # Centerline (from Rectangle box)
-        box = cv2.boxPoints(rect)
-        box = np.int32(box)
-        
-        # Find long axis of the box
-        p0, p1, p2, p3 = box
-        d01 = np.linalg.norm(p0 - p1)
-        d12 = np.linalg.norm(p1 - p2)
-        
-        if d01 < d12:
-            m1 = (p0 + p1) / 2
-            m2 = (p2 + p3) / 2
-        else:
-            m1 = (p1 + p2) / 2
-            m2 = (p3 + p0) / 2
+
+        # Translate contour and centre from crop-local to full-image coordinates
+        # (contour points are stored as (x, y) == (col, row)).
+        offset = np.array([[[minc, minr]]], dtype=cnt_local.dtype)
+        cnt = cnt_local + offset
+        center = (center[0] + minc, center[1] + minr)
 
         candidates.append({
             "center": center,
             "size": (width_px, length_px), # Store as (W, L) for consistency, though minAreaRect is (w,h)
             "angle": angle,
-            "centerline": (tuple(m1.astype(int)), tuple(m2.astype(int))),
             "length_nm": length_nm,
             "width_nm": width_nm,
             "aspect_ratio": aspect_ratio,
@@ -558,7 +555,9 @@ def process_image(
             "eccentricity": eccentricity,
             "circularity": circularity,
             "orientation_deg": angle,
-            "contour": cnt # Store contour for coloring
+            "bbox": (minr, minc),       # crop origin for localized NMS
+            "footprint": obj_mask,      # crop-local pixel mask for NMS
+            "contour": cnt              # full-image contour for coloring
         })
 
 
@@ -567,31 +566,29 @@ def process_image(
     
     results = []
     
-    # Non-Maximum Suppression (NMS)
-    # We need to use the Rectangle for overlap check now
+    # Non-Maximum Suppression (NMS) — dedupe overlapping detections.
+    # Each candidate's footprint is compared against the occupied mask only within
+    # its own bounding box, so this is O(total object area) rather than allocating
+    # and scanning a full-image mask per candidate.
     for cand in candidates:
-        # Draw this rectangle to check overlap
-        temp_mask = np.zeros(binary.shape, dtype=np.uint8)
-        
-        # Reconstruct rect for drawing
-        # We stored (width_px, length_px) in size, but minAreaRect needs (w, h) and angle
-        # This is tricky because we normalized L/W. 
-        # Let's just use the contour we stored to draw the filled shape! Much easier.
-        cv2.drawContours(temp_mask, [cand["contour"]], -1, 1, -1)
-        
-        cand_area = np.sum(temp_mask)
-        if cand_area == 0: continue
-        
-        # Check overlap with occupied_mask
-        overlap = np.sum(temp_mask & occupied_mask)
-        overlap_ratio = overlap / cand_area
-        
-        if overlap_ratio > 0.15: 
+        minr, minc = cand["bbox"]
+        footprint = cand["footprint"]
+        fh, fw = footprint.shape
+
+        cand_area = int(footprint.sum())
+        if cand_area == 0:
             continue
-            
-        # Accept it
-        occupied_mask = cv2.bitwise_or(occupied_mask, temp_mask)
-        
+
+        occ_window = occupied_mask[minr:minr + fh, minc:minc + fw]
+        overlap = int(np.count_nonzero(footprint & occ_window))
+        overlap_ratio = overlap / cand_area
+
+        if overlap_ratio > 0.15:
+            continue
+
+        # Accept it — mark its footprint as occupied (in-place on the view).
+        occ_window |= footprint
+
         # Add to results
         results.append({
             "id": len(results) + 1,

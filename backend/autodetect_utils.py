@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 from skimage import color, util, morphology, measure, exposure
+from skimage.segmentation import watershed
 from scipy import ndimage as ndi
 
 
@@ -427,5 +428,61 @@ def dilmarkers(markers, original_shape):
     # We mainly need the dilated markers list
     # Constructing overlay omitted for speed unless needed, but returning dummy if needed
     # The user code might check return tuple.
-    
+
     return dilated_markers, bg_image # returning image as overlay placeholder
+
+
+def split_clump(crop_bool, min_marker_area, separation_strength=0):
+    """
+    Split a fused / low-solidity binary region into individual convex particles
+    using a marker-controlled watershed on the Euclidean distance transform.
+
+    This is the primary clump separator. Compared with recursive erosion
+    (``ruecs``) it is far faster (the heavy steps are C-implemented) and more
+    robust on dense nanorod aggregates, because seeds are extended (h-) maxima of
+    the distance map: the whole ridge of one elongated rod collapses to a single
+    regional maximum, so a single rod is NOT cut into pieces, while two touching
+    rods separated by a neck become two seeds.
+
+    Args:
+        crop_bool: 2-D boolean array — one connected component (the clump).
+        min_marker_area: discard watershed basins smaller than this (px).
+        separation_strength: -6..+6. Higher = split more aggressively
+            (more seeds); lower = merge more. 0 is the balanced default.
+
+    Returns:
+        List of 2-D boolean masks (same shape as ``crop_bool``), one per
+        particle. Returns ``[crop_bool]`` when the region should stay whole.
+    """
+    crop_bool = np.ascontiguousarray(crop_bool, dtype=bool)
+    if not crop_bool.any():
+        return []
+
+    dist = ndi.distance_transform_edt(crop_bool)
+    # Light smoothing suppresses spurious ridge bumps that would over-segment.
+    dist = ndi.gaussian_filter(dist, 1.0)
+
+    peak = float(dist.max())
+    # Region too thin to contain more than one particle core — keep as-is.
+    if peak < 1.5:
+        return [crop_bool]
+
+    # h controls how deep a valley between two cores must be before they are
+    # treated as separate seeds. Tie it to the user's separation slider so the
+    # same control that tunes binarisation also tunes clump splitting.
+    separation_strength = int(np.clip(separation_strength, -6, 6))
+    h_frac = float(np.clip(0.45 - separation_strength * 0.04, 0.18, 0.72))
+    h = max(0.75, peak * h_frac)
+
+    markers, n = ndi.label(morphology.h_maxima(dist, h))
+    if n <= 1:
+        return [crop_bool]
+
+    ws = watershed(-dist, markers, mask=crop_bool)
+    masks = []
+    for label_idx in range(1, n + 1):
+        mask = ws == label_idx
+        if int(mask.sum()) >= min_marker_area:
+            masks.append(mask)
+
+    return masks or [crop_bool]
