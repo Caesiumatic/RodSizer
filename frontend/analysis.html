@@ -1104,7 +1104,7 @@
                 cb.className = 'rod-checkbox';
                 cb.dataset.index = String(index); // original index — never reassigned
                 cb.checked = !excludedSet.has(rod.id);
-                cb.addEventListener('change', () => { renderParticleOverlay(); syncSelectAllState(); });
+                cb.addEventListener('change', () => { syncSelectAllState(); triggerParticleFlash(index); });
                 cbTd.appendChild(cb);
                 tr.appendChild(cbTd);
 
@@ -1455,25 +1455,90 @@
             }));
         }
 
+        // Two-blink flash on toggle, so a just-(de)selected box is easy to spot.
+        const particleFlashes = new Map();   // currentData index -> start time (ms)
+        const FLASH_DURATION_MS = 760;
+        let flashAnimRunning = false;
+
+        function triggerParticleFlash(index) {
+            particleFlashes.set(index, performance.now());
+            if (!flashAnimRunning) {
+                flashAnimRunning = true;
+                requestAnimationFrame(flashTick);
+            }
+        }
+
+        function flashTick() {
+            const now = performance.now();
+            for (const [idx, start] of particleFlashes) {
+                if (now - start >= FLASH_DURATION_MS) particleFlashes.delete(idx);
+            }
+            renderParticleOverlay();
+            if (particleFlashes.size > 0) {
+                requestAnimationFrame(flashTick);
+            } else {
+                flashAnimRunning = false;
+                renderParticleOverlay();   // final clean frame
+            }
+        }
+
+        function pathParticle(ctx, corners) {
+            ctx.beginPath();
+            ctx.moveTo(corners[0].x, corners[0].y);
+            for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+            ctx.closePath();
+        }
+
         function renderParticleOverlay() {
             if (!syncParticleOverlayToImage()) return;
 
-            particleOverlayCtx.clearRect(0, 0, particleOverlayCanvas.width, particleOverlayCanvas.height);
+            const ctx = particleOverlayCtx;
+            ctx.clearRect(0, 0, particleOverlayCanvas.width, particleOverlayCanvas.height);
             if (!currentData || currentData.length === 0) return;
+
+            // The canvas is at full image resolution but shown scaled down, so
+            // size strokes relative to that ratio to keep them visible.
+            const img = document.getElementById('processedImage');
+            const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / img.clientWidth) : 1;
+            const baseLine = Math.max(1.5, scale * 1.4);
+            const now = performance.now();
 
             currentData.forEach((rod, index) => {
                 const isSelected = getCheckboxStateByIndex(index);
                 const corners = getParticleBoxPoints(rod);
 
-                particleOverlayCtx.beginPath();
-                particleOverlayCtx.moveTo(corners[0].x, corners[0].y);
-                for (let i = 1; i < corners.length; i++) {
-                    particleOverlayCtx.lineTo(corners[i].x, corners[i].y);
+                pathParticle(ctx, corners);
+
+                // Restrained translucent fill — makes boxes easy to find while
+                // keeping the particle inside clearly visible.
+                ctx.fillStyle = isSelected ? 'rgba(30, 94, 255, 0.13)' : 'rgba(255, 179, 0, 0.10)';
+                ctx.fill();
+
+                // Outline: solid for kept particles, dashed for excluded ones.
+                ctx.setLineDash(isSelected ? [] : [scale * 6, scale * 5]);
+                ctx.lineWidth = baseLine;
+                ctx.strokeStyle = isSelected ? '#1e5eff' : '#ffb300';
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Flash highlight (two blinks) right after a toggle.
+                const start = particleFlashes.get(index);
+                if (start !== undefined) {
+                    const t = (now - start) / FLASH_DURATION_MS;          // 0..1
+                    const intensity = Math.abs(Math.sin(t * Math.PI * 2));  // two humps
+                    ctx.save();
+                    pathParticle(ctx, corners);
+                    ctx.shadowColor = 'rgba(255,255,255,0.9)';
+                    ctx.shadowBlur = scale * 6 * intensity;
+                    ctx.fillStyle = isSelected
+                        ? `rgba(30, 94, 255, ${0.15 + 0.45 * intensity})`
+                        : `rgba(255, 140, 0, ${0.12 + 0.45 * intensity})`;
+                    ctx.fill();
+                    ctx.lineWidth = baseLine + scale * 3 * intensity;
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * intensity})`;
+                    ctx.stroke();
+                    ctx.restore();
                 }
-                particleOverlayCtx.closePath();
-                particleOverlayCtx.strokeStyle = isSelected ? '#1e5eff' : '#ffd400';
-                particleOverlayCtx.lineWidth = isSelected ? 3 : 2.5;
-                particleOverlayCtx.stroke();
             });
         }
 
@@ -1787,8 +1852,8 @@
                 const checkbox = document.querySelector(`.rod-checkbox[data-index="${nearestIdx}"]`);
                 if (checkbox) {
                     checkbox.checked = !checkbox.checked;
-                    renderParticleOverlay();
                     syncSelectAllState();
+                    triggerParticleFlash(nearestIdx);   // two-blink flash on the box
                     // Flash the table row briefly and bring it into view in the list.
                     const row = checkbox.closest('tr');
                     if (row) {
