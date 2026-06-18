@@ -1509,33 +1509,33 @@
 
                 pathParticle(ctx, corners);
 
-                // Restrained translucent fill — makes boxes easy to find while
-                // keeping the particle inside clearly visible.
-                ctx.fillStyle = isSelected ? 'rgba(30, 94, 255, 0.13)' : 'rgba(255, 179, 0, 0.10)';
-                ctx.fill();
-
-                // Outline: solid for kept particles, dashed for excluded ones.
+                // Outline only (no interior fill). Solid for kept particles,
+                // dashed for excluded ones.
                 ctx.setLineDash(isSelected ? [] : [scale * 6, scale * 5]);
                 ctx.lineWidth = baseLine;
                 ctx.strokeStyle = isSelected ? '#1e5eff' : '#ffb300';
                 ctx.stroke();
                 ctx.setLineDash([]);
 
-                // Flash highlight (two blinks) right after a toggle.
+                // Flash highlight (two blinks) right after a toggle — a pulsing
+                // bright outline with a glow, no interior fill.
                 const start = particleFlashes.get(index);
                 if (start !== undefined) {
                     const t = (now - start) / FLASH_DURATION_MS;          // 0..1
                     const intensity = Math.abs(Math.sin(t * Math.PI * 2));  // two humps
                     ctx.save();
                     pathParticle(ctx, corners);
-                    ctx.shadowColor = 'rgba(255,255,255,0.9)';
-                    ctx.shadowBlur = scale * 6 * intensity;
-                    ctx.fillStyle = isSelected
-                        ? `rgba(30, 94, 255, ${0.15 + 0.45 * intensity})`
-                        : `rgba(255, 140, 0, ${0.12 + 0.45 * intensity})`;
-                    ctx.fill();
-                    ctx.lineWidth = baseLine + scale * 3 * intensity;
-                    ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * intensity})`;
+                    ctx.shadowColor = 'rgba(255,255,255,0.95)';
+                    ctx.shadowBlur = scale * 8 * intensity;
+                    ctx.lineWidth = baseLine + scale * 3.5 * intensity;
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${0.55 + 0.45 * intensity})`;
+                    ctx.stroke();
+                    // Coloured inner stroke so the blink keeps its select/exclude hue.
+                    ctx.shadowBlur = 0;
+                    ctx.lineWidth = baseLine + scale * 1.2 * intensity;
+                    ctx.strokeStyle = isSelected
+                        ? `rgba(30, 94, 255, ${0.5 + 0.5 * intensity})`
+                        : `rgba(255, 140, 0, ${0.5 + 0.5 * intensity})`;
                     ctx.stroke();
                     ctx.restore();
                 }
