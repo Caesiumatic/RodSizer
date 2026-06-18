@@ -127,7 +127,6 @@ fi
 
 PYTHON_VER=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
 info "Using Python $PYTHON_VER at: $PYTHON_CMD"
-PYTHON_MINOR=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 
 # =============================================================================
 # STEP 3 — Virtual environment & Python dependencies
@@ -143,45 +142,50 @@ fi
 # Activate
 source "$VENV_DIR/bin/activate"
 info "Virtual environment activated"
+VENV_PYTHON="$VENV_DIR/bin/python"
+
+if [ ! -x "$VENV_PYTHON" ]; then
+    error "Virtual environment Python is missing at: $VENV_PYTHON"
+    error "Try deleting backend/.venv and relaunching RodSizer."
+    echo "Press Enter to close..."; read -r; exit 1
+fi
 
 # Ensure Python/matplotlib/fontconfig can cache into writable project-local paths.
 mkdir -p "$MPL_CACHE_DIR"
 export XDG_CACHE_HOME="$CACHE_DIR"
 export MPLCONFIGDIR="$MPL_CACHE_DIR"
 
+needs_python_packages() {
+    "$VENV_PYTHON" - <<'PY' &>/dev/null
+import importlib
+
+for name in ("fastapi", "uvicorn", "tensorflow", "numpy", "cv2", "stardist"):
+    importlib.import_module(name)
+PY
+}
+
 install_tensorflow_with_fallback() {
-    local tf_wheel_url=""
+    local tf_spec="tensorflow==2.21.0"
 
     info "Installing TensorFlow..."
-    if pip install tensorflow; then
+    if "$VENV_PYTHON" -m pip install "$tf_spec"; then
         return 0
     fi
 
     warn "pip could not resolve tensorflow from the package index."
-
-    if [ "$IS_APPLE_SILICON" = true ]; then
-        case "$PYTHON_MINOR" in
-            "3.11")
-                tf_wheel_url="https://files.pythonhosted.org/packages/ec/76/b649b02a243c09f0348199dbd81408c1558cfbec2b6d77d820c428a95254/tensorflow-2.21.0-cp311-cp311-macosx_12_0_arm64.whl"
-                ;;
-        esac
-    fi
-
-    if [ -n "$tf_wheel_url" ]; then
-        warn "Retrying TensorFlow install using the official macOS wheel URL..."
-        pip install "$tf_wheel_url" && return 0
-    fi
+    warn "Retrying TensorFlow install directly from PyPI..."
+    PIP_CONFIG_FILE=/dev/null "$VENV_PYTHON" -m pip install --index-url https://pypi.org/simple "$tf_spec" && return 0
 
     return 1
 }
 
 # Check whether a first-time install is needed
-if ! python -c "import fastapi" &>/dev/null 2>&1; then
+if ! needs_python_packages; then
     info "Installing Python packages — this may take 5–10 minutes on first run."
     info "Please do NOT close this window."
 
     # Upgrade pip / setuptools silently
-    pip install --upgrade pip setuptools wheel --quiet
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet
 
     # ── TensorFlow first (sets numpy version constraint everything else must follow) ──
     #
@@ -196,7 +200,7 @@ if ! python -c "import fastapi" &>/dev/null 2>&1; then
         error "This is usually a package-index or network issue, not a RodSizer code issue."
         if [ "$IS_APPLE_SILICON" = true ]; then
             error "If needed, try this manually inside backend/.venv:"
-            error "  pip install https://files.pythonhosted.org/packages/ec/76/b649b02a243c09f0348199dbd81408c1558cfbec2b6d77d820c428a95254/tensorflow-2.21.0-cp311-cp311-macosx_12_0_arm64.whl"
+            error "  python -m pip install --index-url https://pypi.org/simple tensorflow==2.21.0"
         else
             error "Try rerunning later, or install TensorFlow manually inside backend/.venv."
         fi
@@ -207,7 +211,7 @@ if ! python -c "import fastapi" &>/dev/null 2>&1; then
     # with tensorflow >=2.16 (dlopen fails on _pywrap_tensorflow_internal.so).
     # Modern TensorFlow already runs natively on Apple Silicon without it.
 
-    if ! python -c "import tensorflow" &>/dev/null 2>&1; then
+    if ! "$VENV_PYTHON" -c "import tensorflow" &>/dev/null 2>&1; then
         error "TensorFlow import failed after installation."
         error "Try deleting backend/.venv and relaunching, or check network connectivity."
         echo "Press Enter to close..."; read -r; exit 1
@@ -217,7 +221,7 @@ if ! python -c "import fastapi" &>/dev/null 2>&1; then
     TMP_REQ=$(mktemp /tmp/rodsizer_req_XXXX.txt)
     grep -v "^tensorflow" "$BACKEND_DIR/requirements.txt" > "$TMP_REQ"
 
-    if ! pip install -r "$TMP_REQ" --quiet; then
+    if ! "$VENV_PYTHON" -m pip install -r "$TMP_REQ" --quiet; then
         error "Failed to install some packages. Check the output above."
         rm -f "$TMP_REQ"
         echo "Press Enter to close..."; read -r; exit 1
@@ -225,13 +229,13 @@ if ! python -c "import fastapi" &>/dev/null 2>&1; then
     rm -f "$TMP_REQ"
 
     # ── Verify tensorflow is importable ───────────────────────────────────────
-    if ! python -c "import tensorflow" &>/dev/null 2>&1; then
+    if ! "$VENV_PYTHON" -c "import tensorflow" &>/dev/null 2>&1; then
         error "TensorFlow installation failed."
         error "Try running this manually inside the venv:"
         if [ "$IS_APPLE_SILICON" = true ]; then
-            error "  pip install tensorflow-macos tensorflow-metal"
+            error "  python -m pip install --index-url https://pypi.org/simple tensorflow==2.21.0"
         else
-            error "  pip install tensorflow"
+            error "  python -m pip install tensorflow==2.21.0"
         fi
         echo "Press Enter to close..."; read -r; exit 1
     fi
@@ -255,7 +259,7 @@ fi
 
 # Start uvicorn (log goes to backend/server.log)
 cd "$BACKEND_DIR"
-"$VENV_DIR/bin/uvicorn" main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
+"$VENV_PYTHON" -m uvicorn main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
 SERVER_PID=$!
 
 # Wait until the server responds (allow extra time on first run while caches build)

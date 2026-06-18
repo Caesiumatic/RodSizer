@@ -1,14 +1,13 @@
 from pathlib import Path
 import cv2
 import numpy as np
-from skimage import measure, segmentation, color
+from skimage import measure, morphology
 from utils import get_pixel_size, read_emd_image, read_emd_pixel_size
 import pandas as pd
 import math
 from scipy import ndimage as ndi
 import ncempy.io as nio
 from autodetect_utils import image_kmeans, ruecs, dilmarkers
-import uuid
 
 def save_results_to_excel(results, output_path):
     """
@@ -60,6 +59,61 @@ def calculate_volume(length_nm, width_nm):
     
     return v_cyl + v_caps
 
+
+def _fast_split_large_component(crop: np.ndarray, min_size_px: int):
+    """
+    Fast fallback for very large fused regions where recursive rUECS can be
+    prohibitively slow. It separates narrow bridges, dilates markers back, and
+    keeps masks constrained to the original component.
+    """
+    crop_bool = crop.astype(bool)
+    if not np.any(crop_bool):
+        return []
+
+    area = int(crop_bool.sum())
+    radius = 2 if area < 250_000 else 3
+    seed = morphology.erosion(crop_bool, morphology.disk(radius))
+    seed = morphology.opening(seed, morphology.disk(1))
+
+    labeled, _ = ndi.label(seed)
+    min_marker_area = max(3, int(min_size_px / 4))
+    split_masks = []
+
+    for region in measure.regionprops(labeled):
+        if region.area < min_marker_area:
+            continue
+
+        marker = labeled == region.label
+        grown = marker
+        for _ in range(radius + 1):
+            grown = morphology.dilation(grown, morphology.disk(1))
+
+        grown &= crop_bool
+        if grown.sum() >= min_marker_area:
+            split_masks.append(grown)
+
+    return split_masks or [crop_bool]
+
+
+def _make_label_overlay(img: np.ndarray, labels: np.ndarray):
+    base = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    max_label = int(labels.max()) if labels.size else 0
+    if max_label <= 0:
+        return base
+
+    idx = np.arange(max_label + 1, dtype=np.uint16)
+    color_lut = np.zeros((max_label + 1, 3), dtype=np.uint8)
+    color_lut[1:, 0] = ((37 * idx[1:]) % 200 + 40).astype(np.uint8)
+    color_lut[1:, 1] = ((91 * idx[1:]) % 200 + 40).astype(np.uint8)
+    color_lut[1:, 2] = ((151 * idx[1:]) % 200 + 40).astype(np.uint8)
+
+    mask = labels > 0
+    color_img = color_lut[labels]
+    overlay = base.copy()
+    overlay[mask] = (
+        (base[mask].astype(np.uint16) * 6 + color_img[mask].astype(np.uint16) * 4) // 10
+    ).astype(np.uint8)
+    return overlay
 
 
 def generate_preview(image_path: Path, output_dir: Path):
@@ -205,14 +259,6 @@ def generate_binary_mask_preview(
     binary_mask_tune = int(np.clip(binary_mask_tune, -6, 6))
     binary = image_kmeans(img, separation_strength=binary_mask_tune)
 
-    if not calibration_info.get("scale_bar_coords"):
-        try:
-            _, temp_calib = get_pixel_size(image_path)
-            if temp_calib.get("scale_bar_coords"):
-                calibration_info["scale_bar_coords"] = temp_calib["scale_bar_coords"]
-        except Exception:
-            pass
-
     if calibration_info.get("scale_bar_coords"):
         x1, y1, x2, y2 = calibration_info["scale_bar_coords"]
         h_img, w_img = binary.shape
@@ -338,17 +384,8 @@ def process_image(
     binary = image_kmeans(img, separation_strength=binary_mask_tune)
     
     # MASKING SCALE BAR (Fix for "detecting rods near scale")
-    # If we have scale bar coordinates, mask that area out in the binary image
-    # If we don't have them yet (e.g. pixel size came from metadata), try to find them now
-    if not calibration_info.get("scale_bar_coords"):
-        try:
-             # Quick check for scale bar just for masking
-             _, temp_calib = get_pixel_size(image_path)
-             if temp_calib.get("scale_bar_coords"):
-                 calibration_info["scale_bar_coords"] = temp_calib["scale_bar_coords"]
-        except:
-            pass
-
+    # image_kmeans already masks common camera footer strips; keep explicit
+    # scale-bar coordinates honored when metadata/detection supplies them.
     if calibration_info.get("scale_bar_coords"):
         x1, y1, x2, y2 = calibration_info["scale_bar_coords"]
         # Mask out a slightly larger box around the line
@@ -366,78 +403,41 @@ def process_image(
         binary[mask_y1:mask_y2, mask_x1:mask_x2] = False
     
     # Step 2: Separate Simple vs Complex objects
-    # Label the binary image
-    labels, num_labels = ndi.label(binary)
+    labels, _ = ndi.label(binary)
     regions = measure.regionprops(labels)
-    
-    final_masks = []
-    
+
+    min_area_nm2 = 30
+    min_size_px = max(500, int(min_area_nm2 / (pixel_size_nm * pixel_size_nm))) if pixel_size_nm else 500
+    max_ruecs_area_px = max(15_000, min(40_000, int(binary.size * 0.0015)))
+    max_ruecs_crop_px = max(120_000, min(400_000, int(binary.size * 0.015)))
+    split_labels = np.zeros_like(labels, dtype=np.int32)
+    next_label = 1
+
     for region in regions:
-        # Filter small noise first
-        min_area_nm2 = 30
-        min_size_px = int(min_area_nm2 / (pixel_size_nm * pixel_size_nm)) if pixel_size_nm else 50
-        
         if region.area < min_size_px:
             continue
-            
+
+        minr, minc, maxr, maxc = region.bbox
+
         # Solidity > 0.9 is treated as a single rod ("simple"); lower values go to rUECS splitting.
         if region.solidity > 0.9:
-            # Simple object, keep as is
-            # Create a full-size mask for this object
-            mask = np.zeros_like(binary, dtype=bool)
-            mask[labels == region.label] = True
-            final_masks.append(mask)
+            split_labels[minr:maxr, minc:maxc][region.image] = next_label
+            next_label += 1
         else:
-            # Complex object (Clump), apply rUECS
-            # Extract the crop for processing to save speed? 
-            # ruecs expects a binary mask. We can pass the full mask or crop.
-            # Passing crop is faster but need to restore coordinates.
-            # Let's pass the crop.
-            minr, minc, maxr, maxc = region.bbox
-            crop = region.image # This is the binary mask of the box
-            
-            # Run rUECS
-            markers = ruecs(crop, area_threshold=min_size_px/4)
-            
-            # Dilate back
-            # New dilmarkers returns (markers, overlay) and takes (markers, shape/image)
-            dilated_markers, _ = dilmarkers(markers, crop.shape)
-            
-            # Place back into full image
-            for d_mask in dilated_markers:
-                full_mask = np.zeros_like(binary, dtype=bool)
-                # d_mask is the size of the bbox
-                # We need to handle if dilation made it larger than bbox?
-                # Usually dilation restores size, but could slightly exceed if logic differs.
-                # But d_mask comes from dilating the seed *inside* the crop coordinates?
-                # Wait, dilmarkers returns masks of the same size as input to ruecs (the crop).
-                # So we just paste it back at (minr, minc).
-                
-                d_h, d_w = d_mask.shape
-                # Ensure dimensions match (dilation shouldn't change array size in skimage unless specified, 
-                # but binary_dilation keeps size)
-                
-                full_mask[minr:maxr, minc:maxc] = d_mask
-                final_masks.append(full_mask)
-                
-    # Step 3: Combine all masks into one label map
-    # Reverted to simple labeling
-    
-    labels = np.zeros_like(binary, dtype=np.int32)
-    for i, mask in enumerate(final_masks):
-        labels[mask] = i + 1
-        
-    # Identify border objects
-    border_mask = segmentation.clear_border(labels) > 0
-    
-    props = measure.regionprops(labels)
-    
-    # Define min_size_px for filtering small noise
-    # If 1px = 0.2nm, 100px area is 4nm^2 (tiny). 
-    # We'll use a conservative default or calculate from pixel size
-    min_area_nm2 = 30 # 30 nm^2
-    min_size_px = int(min_area_nm2 / (pixel_size_nm * pixel_size_nm)) if pixel_size_nm else 50
-    
+            crop = region.image
+            if region.area > max_ruecs_area_px or crop.size > max_ruecs_crop_px:
+                split_masks = _fast_split_large_component(crop, min_size_px)
+            else:
+                markers = ruecs(crop, area_threshold=max(1, min_size_px / 4))
+                split_masks, _ = dilmarkers(markers, crop.shape)
+
+            label_crop = split_labels[minr:maxr, minc:maxc]
+            for d_mask in split_masks:
+                label_crop[d_mask.astype(bool)] = next_label
+                next_label += 1
+
+    labels = split_labels
+
     # ... (post-processing comments) ...
     
     # 5. Measurement & Filtering
@@ -640,62 +640,6 @@ def process_image(
         cv2.putText(output_image, label_text, (lx, ly),
                     font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
-    # Classification & Coloring (Bayes-like)
-    # We'll use K-means on the descriptors to group particles
-    if len(results) > 0:
-        # Features: Aspect Ratio, Solidity, Circularity
-        features = np.array([[r["aspect_ratio"], r["solidity"], r["circularity"]] for r in results], dtype=np.float32)
-        
-        # Normalize features
-        mean = np.mean(features, axis=0)
-        std = np.std(features, axis=0) + 1e-6
-        features_norm = (features - mean) / std
-        
-        # K-means (k=4 classes seems reasonable for Rods, Spheres, Clumps, Junk)
-        k = min(4, len(results))
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-        _, labels_class, _ = cv2.kmeans(features_norm, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-        
-        # Assign colors to classes
-        # We'll use a fixed palette
-        palette = [
-            (0, 0, 255),    # Red
-            (0, 255, 0),    # Green
-            (255, 0, 0),    # Blue
-            (0, 255, 255),  # Yellow
-            (255, 0, 255),  # Magenta
-            (255, 255, 0)   # Cyan
-        ]
-        
-        # Create Class-Colored Overlay
-        overlay_viz_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        
-        for i, res in enumerate(results):
-            class_id = labels_class[i][0]
-            class_color = palette[class_id % len(palette)]
-            
-            # Draw filled contour with transparency
-            # We need to draw on a temp layer
-            temp_overlay = overlay_viz_bgr.copy()
-            cv2.drawContours(temp_overlay, [res["contour"]], -1, class_color, -1)
-            
-            # Blend
-            alpha = 0.4
-            cv2.addWeighted(temp_overlay, alpha, overlay_viz_bgr, 1 - alpha, 0, overlay_viz_bgr)
-            
-            # Add border
-            cv2.drawContours(overlay_viz_bgr, [res["contour"]], -1, class_color, 1)
-            
-        # Save Overlay
-        overlay_filename = f"{image_id}_overlay.jpg"
-        overlay_path = output_dir / overlay_filename
-        cv2.imwrite(str(overlay_path), overlay_viz_bgr)
-    else:
-        # Fallback if no results
-        overlay_filename = f"{image_id}_overlay.jpg"
-        overlay_path = output_dir / overlay_filename
-        cv2.imwrite(str(overlay_path), cv2.cvtColor(img, cv2.COLOR_GRAY2BGR))
-
     # Clean up source file name in calibration info for frontend
     def get_clean_filename(path: Path):
         name = path.name
@@ -789,23 +733,9 @@ def process_image(
     # Save Binary Mask for debugging
     binary_filename = _save_binary_image(output_dir, image_id, binary, "binary")
     
-    # Save Segmentation Overlay (Color-coded masks)
-    # Use label2rgb to create a visualization like the paper
-    # labels has unique ID for each rod
     overlay_filename = f"{image_id}_overlay.jpg"
     overlay_path = output_dir / overlay_filename
-    
-    # label2rgb returns float in [0, 1], need to convert to uint8 [0, 255]
-    # bg_label=0 makes background transparent-ish or original image
-    # alpha=0.5 makes it semi-transparent
-    # image needs to be RGB for label2rgb if we want to overlay on it
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    overlay_viz = color.label2rgb(labels, image=img_rgb, bg_label=0, alpha=0.4, image_alpha=1.0)
-    overlay_viz_uint8 = (overlay_viz * 255).astype(np.uint8)
-    
-    # Convert back to BGR for OpenCV saving
-    overlay_viz_bgr = cv2.cvtColor(overlay_viz_uint8, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(overlay_path), overlay_viz_bgr)
+    cv2.imwrite(str(overlay_path), _make_label_overlay(img, labels))
     
     csv_filename = f"{image_id}_results.csv"
     xlsx_filename = f"{image_id}_results.xlsx"
@@ -862,7 +792,7 @@ def process_image(
         sanitized_results.append(sanitized_res_item)
 
     output_data = {
-        "results_schema_version": 2,
+        "results_schema_version": 4,
         "binary_mask_tune": binary_mask_tune,
         "filename": clean_name,
         "data": sanitized_results,
