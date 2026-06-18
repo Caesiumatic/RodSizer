@@ -8,9 +8,10 @@ The current backend uses an AutoDetect-mNP-style workflow in `backend/processing
 
 1. `K-means segmentation` separates foreground particles from background.
 2. `Scale bar masking` removes the scale bar area so it is not detected as a particle.
-3. `Solidity-based split logic` decides whether an object is treated as a single particle or sent to `rUECS` for clump splitting.
-4. `Measurement` uses `minAreaRect` to estimate rod length and width.
-5. `Post-analysis clustering` uses aspect ratio, solidity, and circularity for class-colored overlay grouping.
+3. `Solidity-based split logic` decides whether an object is treated as a single particle (solidity > 0.9) or sent to clump splitting.
+4. `Clump splitting` separates touching/overlapping particles with a marker-controlled **watershed on the Euclidean distance transform** (`autodetect_utils.split_clump`). Seeds are extended (h-)maxima of the distance map, so a single elongated rod stays whole while touching rods split at the neck. This replaced the older recursive-erosion (`rUECS`) path, which was slow and tended to leave dense aggregates fused into one large blob. `rUECS`/`dilmarkers` remain in the codebase as reference but are no longer on the hot path.
+5. `Measurement` uses `minAreaRect` to estimate rod length and width, then derives shape descriptors per particle.
+6. `Label overlay` assigns each detected particle its own colour (`_make_label_overlay`) so the per-particle segmentation can be inspected directly.
 
 ## Parameters Currently In Use
 
@@ -19,9 +20,10 @@ The current backend uses an AutoDetect-mNP-style workflow in `backend/processing
 | `requested_bar_length_nm` | `200.0` nm default | Draws a synthetic blue scale bar if a real calibration is available and no override is given. |
 | `manual_pixel_size` | Optional user override | Replaces metadata-based calibration when supplied. |
 | `min_area_nm2` | `30` nm^2 | Rejects very small objects as noise before and after segmentation. |
-| `region.solidity > 0.9` | Active | Treats highly convex objects as simple particles; lower-solidity objects are treated as clumps and split with `rUECS`. |
+| `region.solidity > 0.9` | Active | Treats highly convex objects as simple particles; lower-solidity objects are treated as clumps and split with the distance-transform watershed. |
+| `binary_mask_tune` (separation slider) | `-6 .. +6`, default `0` | Drives both binarisation morphology (closing vs opening) and clump-splitting aggressiveness (watershed seed depth `h`). Higher = separate more; lower = merge more. |
 | Overlap threshold | `0.15` | Used during non-maximum suppression to skip heavily overlapping duplicate detections. |
-| K-means classes | Up to `4` groups | Groups detected particles for the colored overlay using aspect ratio, solidity, and circularity. |
+| Label overlay | Per-particle colours | Each accepted particle is drawn in its own colour so the segmentation can be verified visually. |
 
 ## Measurement and Descriptor Outputs
 
@@ -78,6 +80,6 @@ The following items described in older documentation are not active as manual tu
 
 If you want to change the current defaults, look in:
 
-- [backend/processing.py](/Users/shichen/Documents/GitHub/RodSizer/backend/processing.py)
+- [backend/processing.py](backend/processing.py)
 
 The main place to inspect is the `process_image(...)` function.

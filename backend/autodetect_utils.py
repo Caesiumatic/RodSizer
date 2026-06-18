@@ -458,7 +458,23 @@ def split_clump(crop_bool, min_marker_area, separation_strength=0):
     if not crop_bool.any():
         return []
 
-    dist = ndi.distance_transform_edt(crop_bool)
+    # Bound worst-case cost: a binarisation failure can flood into one giant
+    # region, where the distance transform / morphological reconstruction /
+    # watershed would otherwise take many seconds. For oversized regions we run
+    # the split on a downscaled copy and map the labels back. Normal particles
+    # and clumps are far below this budget, so their results are unchanged.
+    max_work_px = 4_000_000
+    scale = 1
+    work = crop_bool
+    if crop_bool.size > max_work_px:
+        scale = int(np.ceil(np.sqrt(crop_bool.size / max_work_px)))
+        downscaled = crop_bool[::scale, ::scale]
+        if downscaled.any():
+            work = np.ascontiguousarray(downscaled)
+        else:
+            scale = 1
+
+    dist = ndi.distance_transform_edt(work)
     # Light smoothing suppresses spurious ridge bumps that would over-segment.
     dist = ndi.gaussian_filter(dist, 1.0)
 
@@ -478,7 +494,15 @@ def split_clump(crop_bool, min_marker_area, separation_strength=0):
     if n <= 1:
         return [crop_bool]
 
-    ws = watershed(-dist, markers, mask=crop_bool)
+    ws = watershed(-dist, markers, mask=work)
+
+    if scale > 1:
+        # Upsample the label map back to full resolution and re-constrain it to
+        # the exact original mask.
+        ws = np.repeat(np.repeat(ws, scale, axis=0), scale, axis=1)
+        ws = ws[:crop_bool.shape[0], :crop_bool.shape[1]]
+        ws = ws * crop_bool
+
     masks = []
     for label_idx in range(1, n + 1):
         mask = ws == label_idx
