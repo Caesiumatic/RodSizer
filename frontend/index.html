@@ -384,21 +384,30 @@
 
             <div class="modal-section">
                 <h3>About This App</h3>
-                <p>This application automates the detection and analysis of gold nanorods from TEM images.</p>
-                <p><strong>Methodology:</strong> Based on <em>JACS Au 2021, 1, 316−327</em>.</p>
-                <p><strong>Technique:</strong> It utilizes <em>K-means clustering</em> for segmentation and fits
-                    particles using <em>Rotated Bounding Boxes</em> to extract precise Length and Width measurements.
-                </p>
+                <p>RodSizer detects, separates, measures, and analyzes gold nanorods in
+                    electron-microscopy (TEM / STEM / SEM) images — running entirely on your own
+                    computer.</p>
+                <p><strong>How it works:</strong> particles are segmented with <em>K-means</em>
+                    thresholding; touching or overlapping rods are split with a
+                    <em>distance-transform watershed</em>; and each particle is measured from a
+                    <em>rotated bounding box</em> (length, width, aspect ratio, area, volume, and
+                    shape descriptors).</p>
+                <p><strong>Calibration:</strong> pixel size is read from embedded metadata
+                    (DM3/DM4, EMD, TIFF) or, for camera exports, from the burned-in scale bar /
+                    footer via on-image OCR. Manual calibration is always available.</p>
+                <p><strong>Methodology:</strong> based on <em>JACS Au 2021, 1, 316−327</em>
+                    (AutoDetect-mNP), extended with watershed clump-splitting and OCR calibration.</p>
             </div>
 
             <div class="modal-credits">
-                <strong>Development & Enhancements</strong><br><br>
-                Improved by <strong>Arda</strong> & <strong>Antigravity</strong>, turning the original academic method
-                into a fully functional web application. Key enhancements include:
+                <strong>Made by</strong><br><br>
+                <strong>Shi Chen</strong> &amp; <strong>Arda Turk</strong> — Murphy Group, UIUC,
+                with assistance from Claude &amp; ChatGPT. Highlights:
                 <ul>
-                    <li>Interactive Dashboard & Folder System</li>
-                    <li>Automated Graphs & Histograms</li>
-                    <li>Precise Data Export & Reports</li>
+                    <li>Interactive dashboard, folders &amp; batch analysis</li>
+                    <li>Watershed clump-splitting &amp; OCR scale-bar reading</li>
+                    <li>Sort, bulk-select &amp; statistical-outlier curation</li>
+                    <li>Automated histograms &amp; CSV / Excel / PDF reports</li>
                 </ul>
             </div>
         </div>
@@ -464,21 +473,26 @@
                     <button class="modal-close" onclick="closeUploadHelp(event)">×</button>
                     <div class="modal-section">
                         <h3>Upload Instructions</h3>
-                        <p>You can upload <strong>multiple images</strong> at once.</p>
+                        <p>You can upload <strong>multiple images</strong> at once. Detection runs
+                            automatically in the background after upload.</p>
                         <p><strong>Supported image formats:</strong> TIFF (.tif/.tiff), PNG, JPG/JPEG</p>
                         <p><strong>Supported metadata formats:</strong> .dm3, .dm4, .emd</p>
-                        <p><strong>Scale bar calibration:</strong></p>
+                        <p><strong>How the scale (pixel size) is found, in order:</strong></p>
                         <ul>
-                            <li><strong>.dm3/.dm4/.emd:</strong> Pixel size read automatically from metadata</li>
-                            <li><strong>TIFF (ImageJ):</strong> Pixel size read from ImageJ metadata if available</li>
-                            <li><strong>PNG/JPG (or TIFF without metadata):</strong> Manual calibration is available in the analysis page</li>
+                            <li><strong>.dm3/.dm4/.emd &amp; tagged TIFF:</strong> read automatically from embedded metadata.</li>
+                            <li><strong>Camera exports (PNG/JPG/TIFF without metadata):</strong> read automatically from the burned-in scale bar or the "Pixel size / Fov" footer via OCR.</li>
+                            <li><strong>Anything else:</strong> calibrate manually on the analysis page (draw a line along the scale bar and type its length).</li>
                         </ul>
-                        <p>If you have a separate metadata file (.dm3/.dm4/.emd), upload it with the <strong>same filename</strong> as the image for auto-linking.</p>
+                        <p>Have a separate metadata file (.dm3/.dm4/.emd)? Upload it with the
+                            <strong>same filename</strong> as the image and it will be linked automatically.</p>
+                        <p><strong>On the analysis page you can:</strong> click a particle to exclude it,
+                            sort the table by size, bulk select/deselect above or below a row, auto-remove
+                            statistical outliers, and toggle the ID labels.</p>
 
                         <div
                             style="background-color: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin-top: 15px; border: 1px solid #ffeeba;">
                             <strong>Note:</strong> Please open and review each image individually to verify detection
-                            before viewing the <em>Folder Analysis</em>.
+                            (and confirm the scale) before viewing the <em>Folder Analysis</em>.
                         </div>
                     </div>
                 </div>

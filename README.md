@@ -1,18 +1,51 @@
 # RodSizer
 
-## About
-RodSizer is a scientific local website tool for analyzing Transmission Electron Microscopy (TEM) images of gold nanorods. 
-It automatically:
-- Detects and segments nanoparticles from raw images.
-- Measures dimensions (Length, Width, Aspect Ratio) using advanced fitting algorithms.
-- Filters out non-rod particles (spheres, scale bars, dirt).
-- Generates batch statistics, histograms, and professional Excel/PDF reports.
-##### Methodology: Based on JACS Au 2021, 1, 316−327.
-### Contributors:
-- Shi Chen in Murphy's group @ UIUC.
-- Arda Turk in Murphy's group @ UIUC.
-- Claude, ChatGPT.
-##### Group website: https://murphy-group.chemistry.illinois.edu/
+RodSizer is a local, scientific desktop tool for measuring gold nanorods (and
+similar nanoparticles) in electron-microscopy images. You drop in TEM / STEM /
+SEM images and it detects every particle, separates touching ones, measures each,
+and produces size distributions and exportable reports — all running on your own
+machine, with no data leaving your computer.
+
+## What it does
+- **Detects & segments** particles with K-means thresholding, then **separates
+  touching / overlapping rods** using a marker-controlled watershed on the
+  Euclidean distance transform — so dense clumps are split into individual rods
+  instead of being counted as one large blob.
+- **Measures** each particle from a rotated bounding box: length, width, aspect
+  ratio, area, volume (hemispherically-capped cylinder), orientation, plus shape
+  descriptors (solidity, circularity, eccentricity, convexity).
+- **Calibrates automatically:** reads pixel size from embedded metadata (Gatan
+  DM3/DM4, Velox/EMD, OME- / ImageJ / FEI TIFF). For camera exports that only
+  carry a burned-in scale bar or a "Pixel size / Fov" footer, it reads the value
+  with on-image OCR. Manual draw-a-line calibration is always available.
+- **Lets you curate results** on an interactive analysis page: click a particle
+  to keep/exclude it, sort the table by area (or L / W / AR / ID), bulk
+  select/deselect everything above or below a row, auto-remove statistical
+  outliers (Tukey 1.5×IQR), and toggle the on-image ID labels.
+- **Exports** per-image and per-folder statistics, histograms, and CSV / Excel /
+  PDF reports.
+
+## Typical workflow
+1. Create a folder and upload images (you can drop in many at once).
+2. Open each image to review detection. Fix the scale if needed, then deselect
+   clumps / misreads — click them on the image, or use the sort, bulk-select, and
+   "Deselect outliers" tools in the selection panel.
+3. Press **Update Particles** to generate statistics and histograms, then
+   download the report.
+4. Use **View Analysis** to aggregate the whole folder.
+
+## Methodology
+Segmentation follows the AutoDetect-mNP approach (*JACS Au* **2021**, *1*,
+316−327), extended in RodSizer with distance-transform watershed splitting for
+dense clumps and OCR scale-bar calibration for un-tagged camera exports.
+
+## Contributors
+- **Shi Chen** — Murphy Group, UIUC (lead developer)
+- **Arda Turk** — Murphy Group, UIUC
+- Built with assistance from Claude and ChatGPT.
+
+Group website: https://murphy-group.chemistry.illinois.edu/
+
 ## Instruction for Launching
 1. Click on "<>code" in Github page.
 2. Click on "Download ZIP".
@@ -20,13 +53,17 @@ It automatically:
 4. Click on the RodSizer.zip to unzip.
 5. Double-click on RodSizer_Launcher_MacOS.command or RodSizer_Launcher_Windows.bat.
 6. Wait for the environment to be set up (first time only) and the local website to be opened.
-## Notes: 
+
+## Notes:
 - DO NOT double-click on RodSizer_CLEANER_MacOS.command unless you are sure that you want to clean ALL local history of data and reports.
 - First-time launching may take some time, like 5-10 mins.
 - Try ask a coding agent if there's an issue with environment setup.
 - MacOS is more recommended.
 - (Windows) If Windows Defender asks, click `More Info` -> `Run Anyway`.
 - (Windows) Users should ensure `Add Python to PATH` is checked during installation.
+- Automatic scale-bar OCR uses Tesseract, which the launcher installs for you
+  (Homebrew on macOS, winget on Windows). If it cannot be installed, RodSizer
+  still runs — just calibrate manually.
 
 ## Cleaner Script (Mac)
 - `RodSizer_CLEANER_MacOS.command` is a cleanup tool for clearing local history data.
@@ -47,4 +84,3 @@ It automatically:
 ## Requirements
 - macOS or Windows
 - Python 3 installed (standard on most Macs, or downloadable from `python.org`)
-
