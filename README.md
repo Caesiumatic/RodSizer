@@ -84,4 +84,4 @@ Group website: https://murphy-group.chemistry.illinois.edu/
 
 ## Requirements
 - macOS or Windows
-- Python 3 installed (standard on most Macs, or downloadable from `python.org`)
+- Python 3.10-3.12 (the Mac launcher installs it automatically if missing; on Windows download from `python.org`)

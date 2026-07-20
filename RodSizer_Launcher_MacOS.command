@@ -74,18 +74,20 @@ if command -v tesseract &>/dev/null; then
 fi
 
 # =============================================================================
-# STEP 2 — Python 3.10+
+# STEP 2 — Python 3.10-3.12
+#  (the pinned dependency set in backend/requirements.txt targets these
+#   versions; 3.13+ lacks wheels for the pinned numpy)
 # =============================================================================
 step "Step 2/4: Checking Python"
 
 PYTHON_CMD=""
 
-# Helper: find a suitable Python (3.10 or newer), preferring newer versions
+# Helper: find a suitable Python (3.10-3.12), preferring newer versions
 find_python() {
     local candidate
-    for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+    for candidate in python3.12 python3.11 python3.10 python3; do
         if command -v "$candidate" &>/dev/null; then
-            if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' &>/dev/null; then
+            if "$candidate" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 12) else 1)' &>/dev/null; then
                 command -v "$candidate"; return
             fi
         fi
@@ -93,7 +95,7 @@ find_python() {
 
     # Homebrew-managed fallback (works regardless of PATH)
     local brew_prefix ver
-    for ver in 3.13 3.12 3.11 3.10; do
+    for ver in 3.12 3.11 3.10; do
         brew_prefix="$(brew --prefix python@$ver 2>/dev/null)"
         if [ -n "$brew_prefix" ] && [ -x "$brew_prefix/bin/python$ver" ]; then
             echo "$brew_prefix/bin/python$ver"; return
@@ -105,7 +107,7 @@ PYTHON_CMD="$(find_python)"
 
 # If still not found, install via Homebrew then retry
 if [ -z "$PYTHON_CMD" ]; then
-    warn "Python 3.10+ not found. Installing via Homebrew..."
+    warn "Python 3.10-3.12 not found. Installing 3.12 via Homebrew..."
     brew install python@3.12
     PYTHON_CMD="$(find_python)"
 fi
