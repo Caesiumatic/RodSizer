@@ -278,11 +278,11 @@
                     <table id="dataTable">
                         <thead>
                             <tr>
-                                <th>Source Image</th>
-                                <th>ID</th>
-                                <th>L (nm)</th>
-                                <th>W (nm)</th>
-                                <th>AR</th>
+                                <th onclick="sortTable('source_image')" title="Click to sort" style="cursor:pointer; user-select:none;">Source Image <span class="sort-arrow" data-col="source_image"></span></th>
+                                <th onclick="sortTable('id')" title="Click to sort" style="cursor:pointer; user-select:none;">ID <span class="sort-arrow" data-col="id"></span></th>
+                                <th onclick="sortTable('length_nm')" title="Click to sort" style="cursor:pointer; user-select:none;">L (nm) <span class="sort-arrow" data-col="length_nm"></span></th>
+                                <th onclick="sortTable('width_nm')" title="Click to sort" style="cursor:pointer; user-select:none;">W (nm) <span class="sort-arrow" data-col="width_nm"></span></th>
+                                <th onclick="sortTable('aspect_ratio')" title="Click to sort" style="cursor:pointer; user-select:none;">AR <span class="sort-arrow" data-col="aspect_ratio"></span></th>
                             </tr>
                         </thead>
                         <tbody></tbody>
@@ -308,6 +308,8 @@
             dlBtn.href = `/folders/${encodeURIComponent(folderName)}/export_aggregate`;
 
             let lengthChart, widthChart;
+            let currentData = [];
+            let currentSort = { column: null, direction: 'asc' };
 
             async function loadAggregateData() {
                 try {
@@ -338,14 +340,41 @@
                 document.getElementById('meanAR').textContent = data.stats.mean_ar || "-";
 
                 // Charts
-                const items = data.data;
+                currentData = data.data || [];
+                const items = currentData;
                 const lengths = items.map(d => d.length_nm);
                 const widths = items.map(d => d.width_nm);
 
                 lengthChart = createHistogram('lengthChart', 'Length Distribution', lengths);
                 widthChart = createHistogram('widthChart', 'Width Distribution', widths);
 
-                // Table
+                renderTable();
+            }
+
+            function renderTable() {
+                let items = currentData.slice();
+
+                if (currentSort.column) {
+                    const col = currentSort.column;
+                    const dir = currentSort.direction === 'asc' ? 1 : -1;
+                    items.sort((a, b) => {
+                        const va = a[col], vb = b[col];
+                        if (typeof va === 'string' || typeof vb === 'string') {
+                            return String(va ?? '').localeCompare(String(vb ?? '')) * dir;
+                        }
+                        return ((va ?? 0) - (vb ?? 0)) * dir;
+                    });
+                }
+
+                // Update header arrows
+                document.querySelectorAll('#dataTable .sort-arrow').forEach(span => {
+                    if (span.dataset.col === currentSort.column) {
+                        span.textContent = currentSort.direction === 'asc' ? '▲' : '▼';
+                    } else {
+                        span.textContent = '';
+                    }
+                });
+
                 const tbody = document.querySelector('#dataTable tbody');
                 tbody.innerHTML = '';
                 items.forEach(item => {
@@ -364,6 +393,16 @@
                     });
                     tbody.appendChild(tr);
                 });
+            }
+
+            function sortTable(column) {
+                if (currentSort.column === column) {
+                    currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSort.column = column;
+                    currentSort.direction = 'asc';
+                }
+                renderTable();
             }
 
             function createHistogram(canvasId, label, data) {
