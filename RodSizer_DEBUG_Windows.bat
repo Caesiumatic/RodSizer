@@ -32,9 +32,13 @@ REM Auto-Detect
 if exist "C:\Python39\python.exe" set "PY_EXE=C:\Python39\python.exe" & goto FOUND_PYTHON
 if exist "C:\Python310\python.exe" set "PY_EXE=C:\Python310\python.exe" & goto FOUND_PYTHON
 if exist "C:\Python311\python.exe" set "PY_EXE=C:\Python311\python.exe" & goto FOUND_PYTHON
+if exist "C:\Python312\python.exe" set "PY_EXE=C:\Python312\python.exe" & goto FOUND_PYTHON
+if exist "C:\Python313\python.exe" set "PY_EXE=C:\Python313\python.exe" & goto FOUND_PYTHON
 if exist "C:\Program Files\Python39\python.exe" set "PY_EXE=C:\Program Files\Python39\python.exe" & goto FOUND_PYTHON
 if exist "C:\Program Files\Python310\python.exe" set "PY_EXE=C:\Program Files\Python310\python.exe" & goto FOUND_PYTHON
 if exist "C:\Program Files\Python311\python.exe" set "PY_EXE=C:\Program Files\Python311\python.exe" & goto FOUND_PYTHON
+if exist "C:\Program Files\Python312\python.exe" set "PY_EXE=C:\Program Files\Python312\python.exe" & goto FOUND_PYTHON
+if exist "C:\Program Files\Python313\python.exe" set "PY_EXE=C:\Program Files\Python313\python.exe" & goto FOUND_PYTHON
 
 :ASK_USER
 echo.

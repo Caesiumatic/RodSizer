@@ -56,12 +56,8 @@ Group website: https://murphy-group.chemistry.illinois.edu/
 
 ## Notes:
 - DO NOT double-click on RodSizer_CLEANER_MacOS.command unless you are sure that you want to clean ALL local history of data and reports.
-- First-time launching may take some time, like 5-10 mins. Most of that is
-  installing the deep-learning packages (`tensorflow` + `stardist`, ~1 GB). These
-  are kept for possible future ML-based detection but are **not used** by the
-  current pipeline (K-means + watershed), so the wait is one-time setup only —
-  later launches are fast. See `backend/requirements.txt` to remove them if you
-  want a leaner install.
+- First-time launching takes a few minutes (typically 2-3) while Python
+  packages are installed. This is one-time setup only — later launches are fast.
 - Try ask a coding agent if there's an issue with environment setup.
 - MacOS is more recommended.
 - (Windows) If Windows Defender asks, click `More Info` -> `Run Anyway`.
