@@ -502,6 +502,7 @@ async def export_aggregate_folder(folder_name: str):
 @app.post("/upload")
 async def upload_images(background_tasks: BackgroundTasks, folder: str = Form(None), files: List[UploadFile] = File(...)):
     uploaded_files = []
+    saved_paths = []
     try:
         if len(files) > MAX_UPLOAD_FILES:
             raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_UPLOAD_FILES} per request)")
@@ -550,36 +551,33 @@ async def upload_images(background_tasks: BackgroundTasks, folder: str = Form(No
             # 1. Generate Immediate Preview (Sync)
             # This ensures the user sees something right away
             _processing_function("generate_preview")(file_path, RESULTS_DIR)
-            
+
             uploaded_files.append({
-                "id": file_path.stem, 
+                "id": file_path.stem,
                 "filename": safe_filename,
                 "status": "processing"
             })
-            
-            # 2. Queue Heavy Processing (Background)
-            # Find matching calibration file (.dm3/.dm4)
-            search_dir = file_path.parent
+            saved_paths.append(file_path)
+
+        # 2. Queue Heavy Processing (Background)
+        # IMPORTANT: calibration lookup happens only after EVERY file in the
+        # batch is saved. Doing it inside the save loop caused a race: an image
+        # saved before its .dm3 partner never got calibrated (upload order is
+        # effectively random, so ~half of paired uploads lost their scale).
+        def _original_stem(name: str) -> str:
+            if len(name) > 37 and name[36] == '_':
+                return Path(name[37:]).stem
+            return Path(name).stem
+
+        for file_path in saved_paths:
             calibration_source_path = None
-            original_stem = None
-            
-            if len(save_name) > 37 and save_name[36] == '_':
-                original_stem = Path(save_name[37:]).stem
-            else:
-                original_stem = Path(save_name).stem
-                
-            for f in search_dir.glob("*"):
-                if f.suffix.lower() in ['.dm3', '.dm4', '.emd']:
-                    dm3_stem = None
-                    if len(f.name) > 37 and f.name[36] == '_':
-                        dm3_stem = Path(f.name[37:]).stem
-                    else:
-                        dm3_stem = f.stem
-                    if dm3_stem == original_stem:
+            target_stem = _original_stem(file_path.name)
+            for f in file_path.parent.glob("*"):
+                if f.suffix.lower() in ['.dm3', '.dm4', '.emd'] and f != file_path:
+                    if _original_stem(f.name) == target_stem:
                         calibration_source_path = f
                         break
-            
-            # Add to background tasks
+
             background_tasks.add_task(
                 _processing_function("process_image"),
                 file_path,
