@@ -300,6 +300,23 @@
             opacity: 1;
         }
 
+        /* First click arms the button; second click confirms. */
+        .delete-btn.armed {
+            opacity: 1;
+            width: auto;
+            border-radius: 14px;
+            padding: 0 12px 2px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #dc3545;
+        }
+
+        .btn-danger.armed {
+            background: #a71d2a;
+            outline: 2px solid #dc3545;
+            outline-offset: 1px;
+        }
+
         /* Overlay */
         .processing-overlay {
             position: absolute;
@@ -448,7 +465,7 @@
                         onclick="openUploadHelp()">Instructions</button>
                     <button class="btn btn-outline" onclick="renameCurrentFolder()">Rename Folder</button>
                     <button class="btn" onclick="viewFolderAnalysis()">View Analysis</button>
-                    <button class="btn btn-danger" onclick="deleteCurrentFolder()">Delete Folder</button>
+                    <button class="btn btn-danger" onclick="deleteCurrentFolder(event)">Delete Folder</button>
                 </div>
             </div>
 
@@ -641,7 +658,7 @@
                     deleteBtn.style.padding = '5px 10px';
                     deleteBtn.style.fontSize = '12px';
                     deleteBtn.textContent = 'Delete';
-                    deleteBtn.addEventListener('click', () => deleteFolderByName(folder));
+                    deleteBtn.addEventListener('click', (ev) => deleteFolderByName(folder, ev));
 
                     actionsCell.appendChild(renameBtn);
                     actionsCell.appendChild(deleteBtn);
@@ -694,10 +711,35 @@
 
         // --- Folder Operations ---
 
-        async function deleteCurrentFolder() {
+        // Two-step in-page confirmation (replaces the browser confirm() popup,
+        // which some embedded browsers block). First click arms the button and
+        // shows the confirm label; a second click within 4s runs the action.
+        function armButton(btn, armedLabel, action) {
+            if (btn.dataset.armed) {
+                clearTimeout(btn._disarmTimer);
+                disarmButton(btn);
+                action();
+                return;
+            }
+            btn.dataset.armed = '1';
+            btn.dataset.origLabel = btn.textContent;
+            btn.textContent = armedLabel;
+            btn.classList.add('armed');
+            btn._disarmTimer = setTimeout(() => disarmButton(btn), 4000);
+        }
+
+        function disarmButton(btn) {
+            if (!btn.dataset.armed) return;
+            delete btn.dataset.armed;
+            btn.textContent = btn.dataset.origLabel || btn.textContent;
+            delete btn.dataset.origLabel;
+            btn.classList.remove('armed');
+        }
+
+        async function deleteCurrentFolder(event) {
             if (!currentFolder) return;
-            if (!confirm(`Permanently delete folder "${currentFolder}"?`)) return;
-            await performDelete(currentFolder);
+            const btn = event.target.closest('button');
+            armButton(btn, 'Really delete?', () => performDelete(currentFolder));
         }
 
         async function renameCurrentFolder() {
@@ -705,9 +747,9 @@
             await renameFolder(currentFolder);
         }
 
-        async function deleteFolderByName(name) {
-            if (!confirm(`Permanently delete folder "${name}"?`)) return;
-            await performDelete(name);
+        async function deleteFolderByName(name, event) {
+            const btn = event.target.closest('button');
+            armButton(btn, 'Really delete?', () => performDelete(name));
         }
 
         async function performDelete(name) {
@@ -816,7 +858,10 @@
                     const delBtn = document.createElement('button');
                     delBtn.className = 'delete-btn';
                     delBtn.textContent = '×';
-                    delBtn.addEventListener('click', (ev) => deleteImage(img.id, ev));
+                    delBtn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        armButton(delBtn, 'Delete?', () => deleteImage(img.id));
+                    });
                     imgWrap.appendChild(delBtn);
 
                     const info = document.createElement('div');
@@ -867,9 +912,7 @@
             }
         }
 
-        async function deleteImage(id, event) {
-            event.stopPropagation();
-            if (!confirm('Delete this image?')) return;
+        async function deleteImage(id) {
             try {
                 const response = await fetch(`/images/${id}`, { method: 'DELETE' });
                 if (response.ok) loadImages();
