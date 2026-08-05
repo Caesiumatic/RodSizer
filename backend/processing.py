@@ -7,7 +7,7 @@ import pandas as pd
 import math
 from scipy import ndimage as ndi
 import ncempy.io as nio
-from autodetect_utils import image_kmeans, ruecs, dilmarkers, split_clump
+from autodetect_utils import image_kmeans, ruecs, dilmarkers, split_clump, split_raft
 
 # Aspect-ratio threshold above which a particle is counted as a rod in the
 # "Rod yield" statistic. Reported alongside the value so readers see the cutoff.
@@ -447,30 +447,86 @@ def process_image(
     split_labels = np.zeros_like(labels, dtype=np.int32)
     next_label = 1
 
-    for region in regions:
-        if region.area < min_size_px:
-            continue
+    def region_short_side(region):
+        """Short side (px) of the rotated bounding box around a region."""
+        cnts, _ = cv2.findContours(region.image.astype(np.uint8),
+                                   cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return 0.0
+        (_, (rw, rh), _) = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+        return float(min(rw, rh))
 
+    # Estimate the single-rod width from the population itself. Rafts of fused
+    # rods inflate the high end, so use a low percentile of the "simple"
+    # (high-solidity) regions — robust even when many regions are rafts.
+    # Estimation only looks at substantial regions (>= 8x the noise floor):
+    # small debris/specks would otherwise drag the estimate far below the true
+    # rod width and break the split-acceptance guard.
+    sized_regions = [r for r in regions if r.area >= min_size_px]
+    short_sides = {r.label: region_short_side(r) for r in sized_regions}
+    est_regions = [r for r in sized_regions if r.area >= 8 * min_size_px]
+    simple_widths = [short_sides[r.label] for r in est_regions
+                     if r.solidity > 0.9 and short_sides[r.label] > 0]
+    all_widths = [short_sides[r.label] for r in est_regions if short_sides[r.label] > 0]
+    if len(simple_widths) >= 3:
+        width_est_px = float(np.percentile(simple_widths, 25))
+    elif len(all_widths) >= 3:
+        # Raft-heavy image: barely any clean single rods. The narrowest
+        # substantial regions are still single rods, so a low percentile of
+        # ALL substantial regions works.
+        width_est_px = float(np.percentile(all_widths, 10))
+    else:
+        width_est_px = None
+
+    for region in sized_regions:
         minr, minc, maxr, maxc = region.bbox
         label_crop = split_labels[minr:maxr, minc:maxc]
 
-        # Solidity > 0.9 is treated as a single rod ("simple"); lower values are
-        # treated as clumps and separated with a distance-transform watershed
-        # (autodetect_utils.split_clump). Watershed keeps a single elongated rod
-        # whole while breaking touching rods apart, and is far faster than the
-        # recursive rUECS erosion it replaces.
-        if region.solidity > 0.9:
+        short_px = short_sides[region.label]
+        # A raft of parallel rods fused side-by-side is much wider than a
+        # single rod, and can be convex enough to pass the solidity test.
+        is_wide = bool(width_est_px) and short_px >= 1.6 * width_est_px
+
+        # Solidity > 0.9 and normal width: a single rod, keep whole.
+        if region.solidity > 0.9 and not is_wide:
             label_crop[region.image] = next_label
             next_label += 1
-        else:
+            continue
+
+        split_masks = None
+
+        # Width-suspicious regions first get the intensity-seam watershed
+        # (split_clump_intensity): parallel touching rods have no binary
+        # "neck", but the lighter contact seams in the raw image do separate
+        # them. Accept the split only if the pieces individually look like
+        # single rods (short side near the estimated rod width) — this rejects
+        # bogus cuts through a single rod with internal diffraction bands.
+        if is_wide:
+            gray_crop = img[minr:maxr, minc:maxc]
+            children = split_raft(gray_crop, region.image, min_marker_area, width_est_px)
+            if len(children) >= 2:
+                child_shorts = []
+                for c_mask in children:
+                    cnts, _ = cv2.findContours(c_mask.astype(np.uint8),
+                                               cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if cnts:
+                        (_, (rw, rh), _) = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+                        child_shorts.append(min(rw, rh))
+                rod_like = [s for s in child_shorts if s <= 1.8 * width_est_px]
+                if child_shorts and len(rod_like) / len(child_shorts) >= 0.6:
+                    split_masks = children
+
+        # Fallback / normal clump path: distance-transform watershed.
+        if split_masks is None:
             split_masks = split_clump(
                 region.image,
                 min_marker_area,
                 separation_strength=binary_mask_tune,
             )
-            for d_mask in split_masks:
-                label_crop[d_mask] = next_label
-                next_label += 1
+
+        for d_mask in split_masks:
+            label_crop[d_mask] = next_label
+            next_label += 1
 
     labels = split_labels
 
