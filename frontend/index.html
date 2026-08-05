@@ -414,7 +414,10 @@
         <div id="folderLedgerView">
             <div class="ledger-header">
                 <h2>Folders</h2>
-                <button class="btn" onclick="createFolder()">+ Create New Folder</button>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-outline" onclick="window.location.href='/compare'">Compare Batches</button>
+                    <button class="btn" onclick="createFolder()">+ Create New Folder</button>
+                </div>
             </div>
 
             <table class="ledger-table">

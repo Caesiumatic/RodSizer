@@ -9,6 +9,50 @@ from scipy import ndimage as ndi
 import ncempy.io as nio
 from autodetect_utils import image_kmeans, ruecs, dilmarkers, split_clump
 
+# Aspect-ratio threshold above which a particle is counted as a rod in the
+# "Rod yield" statistic. Reported alongside the value so readers see the cutoff.
+ROD_AR_THRESHOLD = 1.5
+
+
+def compute_summary_stats(results):
+    """Distribution statistics for a set of particles.
+
+    Returns a list of {"Metric", "Value"} rows: count, then per dimension
+    (length, width, aspect ratio) the mean ± SD, median, D10/D90 percentiles
+    and coefficient of variation, plus the rod yield at ROD_AR_THRESHOLD.
+    """
+    df = pd.DataFrame(results)
+    if df.empty:
+        return []
+
+    rows = [{"Metric": "Count", "Value": len(df)}]
+
+    dims = [("length_nm", "Length (nm)"),
+            ("width_nm", "Width (nm)"),
+            ("aspect_ratio", "Aspect Ratio")]
+    for col, label in dims:
+        if col not in df:
+            continue
+        vals = pd.to_numeric(df[col], errors="coerce").dropna()
+        if vals.empty:
+            continue
+        mean, std = vals.mean(), vals.std()
+        cv = (std / mean * 100) if mean else 0
+        rows.append({"Metric": f"Mean {label}", "Value": f"{mean:.1f} ± {std:.1f}"})
+        rows.append({"Metric": f"Median {label}", "Value": f"{vals.median():.1f}"})
+        rows.append({"Metric": f"D10 {label}", "Value": f"{vals.quantile(0.10):.1f}"})
+        rows.append({"Metric": f"D90 {label}", "Value": f"{vals.quantile(0.90):.1f}"})
+        rows.append({"Metric": f"CV {label} (%)", "Value": f"{cv:.1f}"})
+
+    if "aspect_ratio" in df:
+        ar = pd.to_numeric(df["aspect_ratio"], errors="coerce").dropna()
+        if not ar.empty:
+            yield_pct = (ar >= ROD_AR_THRESHOLD).mean() * 100
+            rows.append({"Metric": f"Rod yield, AR >= {ROD_AR_THRESHOLD} (%)",
+                         "Value": f"{yield_pct:.1f}"})
+    return rows
+
+
 def save_results_to_excel(results, output_path):
     """
     Saves results to an Excel file with 'Statistics' and 'Data' sheets.
@@ -22,16 +66,7 @@ def save_results_to_excel(results, output_path):
     cols_to_drop = [c for c in ["contour", "contour_full"] if c in df_export.columns]
     df_export = df_export.drop(columns=cols_to_drop)
 
-    # Calculate Stats for Excel
-    s_mean = df_export.mean(numeric_only=True).round(1)
-    s_std = df_export.std(numeric_only=True).round(1)
-    
-    stats_rows = []
-    stats_rows.append({"Metric": "Count", "Value": len(df_export)})
-    stats_rows.append({"Metric": "Mean Length (nm)", "Value": f"{s_mean.get('length_nm', 0)} ± {s_std.get('length_nm', 0)}"})
-    stats_rows.append({"Metric": "Mean Width (nm)", "Value": f"{s_mean.get('width_nm', 0)} ± {s_std.get('width_nm', 0)}"})
-    stats_rows.append({"Metric": "Mean AR", "Value": f"{s_mean.get('aspect_ratio', 0)} ± {s_std.get('aspect_ratio', 0)}"})
-    stats_df = pd.DataFrame(stats_rows)
+    stats_df = pd.DataFrame(compute_summary_stats(results))
 
     # Save to Excel
     try:

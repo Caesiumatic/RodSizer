@@ -271,6 +271,17 @@
                         <div class="chart-wrapper"><canvas id="lengthChart"></canvas></div>
                         <div class="chart-wrapper"><canvas id="widthChart"></canvas></div>
                     </div>
+
+                    <h2 style="margin-top: 25px;">Detailed Statistics</h2>
+                    <table id="extendedStatsTable" style="width: 100%; max-width: 640px; border-collapse: collapse; font-size: 14px;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; padding: 6px 10px; border-bottom: 2px solid #ddd;">Metric</th>
+                                <th style="text-align:right; padding: 6px 10px; border-bottom: 2px solid #ddd;">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
 
                 <h2>Batch Ledger</h2>
@@ -338,6 +349,22 @@
                 document.getElementById('meanLen').textContent = data.stats.mean_length || "-";
                 document.getElementById('meanWidth').textContent = data.stats.mean_width || "-";
                 document.getElementById('meanAR').textContent = data.stats.mean_ar || "-";
+
+                // Detailed statistics table (median, D10/D90, CV%, rod yield)
+                const statsBody = document.querySelector('#extendedStatsTable tbody');
+                statsBody.innerHTML = '';
+                (data.extended_stats || []).forEach(row => {
+                    const tr = document.createElement('tr');
+                    const tdMetric = document.createElement('td');
+                    tdMetric.textContent = row.Metric;
+                    tdMetric.style.cssText = 'padding: 5px 10px; border-bottom: 1px solid #eee;';
+                    const tdValue = document.createElement('td');
+                    tdValue.textContent = row.Value;
+                    tdValue.style.cssText = 'padding: 5px 10px; border-bottom: 1px solid #eee; text-align: right; font-variant-numeric: tabular-nums;';
+                    tr.appendChild(tdMetric);
+                    tr.appendChild(tdValue);
+                    statsBody.appendChild(tr);
+                });
 
                 // Charts
                 currentData = data.data || [];
