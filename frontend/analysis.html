@@ -591,7 +591,7 @@
                 <div class="modal-body">
                     <p><strong>1. Review the image:</strong> the centre panel shows detected particles as boxes.
                         Toggle <em>Show Binary Mask</em> to inspect segmentation, <em>Zoom</em> to look closer, and
-                        <em>Show IDs</em> to label particles (hidden by default so they don't cover small rods).</p>
+                        <em>Hide IDs</em> to unclutter the view; ID colors cycle by decade (0s yellow, 10s magenta, 20s green, 30s cyan, 40s red, ...).</p>
                     <p><strong>2. Check the scale:</strong> the calibration source is shown at the top right. If it is
                         wrong or uncalibrated, click <em>Re-scale</em> and draw a line along the scale bar, or use the
                         <em>Mask</em> slider to fine-tune how aggressively touching particles are separated.</p>
@@ -638,7 +638,7 @@
             </p>
             <div class="image-container" style="position: relative; flex: 1; overflow: auto;">
                 <div class="image-wrapper" id="zoomWrapper">
-                    <button class="label-toggle-btn active" onclick="toggleLabels()" id="labelToggleBtn">Show IDs</button>
+                    <button class="label-toggle-btn" onclick="toggleLabels()" id="labelToggleBtn">Hide IDs</button>
                     <button class="image-toggle-btn" onclick="toggleImageView()" id="imageToggleBtn">Show Binary Mask</button>
                     <button class="zoom-btn" onclick="toggleZoom()" id="zoomToggle">
                         <span style="font-size: 16px;">🔍</span> Zoom
@@ -1563,7 +1563,7 @@
         // Show/hide the ID numbers drawn over the image (they can obscure small
         // particles). Hidden by default; drawn on the canvas overlay so the
         // toggle is instant.
-        let showLabels = false;
+        let showLabels = true;
         function toggleLabels() {
             showLabels = !showLabels;
             const btn = document.getElementById('labelToggleBtn');
@@ -1617,7 +1617,7 @@
             // size strokes relative to that ratio to keep them visible.
             const img = document.getElementById('processedImage');
             const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / img.clientWidth) : 1;
-            const baseLine = Math.max(1, scale * 0.7);   // thin outlines, vivid colour
+            const baseLine = Math.max(2, scale * 1.6);   // clearly visible outlines
             const now = performance.now();
 
             currentData.forEach((rod, index) => {
@@ -1659,22 +1659,33 @@
             });
 
             // ID numbers, drawn last (on top of all boxes) and only when enabled.
-            // Outlined white text instead of a filled pill so they obscure the
-            // particle underneath as little as possible.
+            // Color cycles by decade (0s yellow, 10s magenta, 20s green, 30s
+            // cyan, 40s red, ...) so e.g. "34" is found at a glance among the
+            // cyan numbers. Black outline keeps every hue readable.
             if (showLabels) {
+                const decadeColors = [
+                    '#ffee00',  //  0-9   yellow
+                    '#ff35ff',  // 10-19  magenta
+                    '#35e635',  // 20-29  green
+                    '#00e5ff',  // 30-39  cyan
+                    '#ff3b30',  // 40-49  red
+                    '#ff9500',  // 50-59  orange
+                    '#ffb6c9',  // 60-69  pink
+                    '#00ff9d',  // 70-79  spring green
+                ];
                 const fontPx = Math.max(13 * scale, 11);
                 ctx.font = `bold ${fontPx}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.lineWidth = Math.max(1, scale * 0.9);
+                ctx.lineWidth = Math.max(1.5, scale * 1.1);
                 ctx.lineJoin = 'round';
                 currentData.forEach((rod) => {
                     const label = String(rod.id ?? '');
                     if (!label) return;
                     const x = rod.centroid_x, y = rod.centroid_y;
-                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
                     ctx.strokeText(label, x, y);
-                    ctx.fillStyle = '#ffffff';
+                    ctx.fillStyle = decadeColors[Math.floor((rod.id ?? 0) / 10) % decadeColors.length];
                     ctx.fillText(label, x, y);
                 });
                 ctx.textAlign = 'start';
