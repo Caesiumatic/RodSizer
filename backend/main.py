@@ -397,6 +397,23 @@ async def save_folder_selection(folder_name: str, req: FolderSelectionRequest):
         print(f"Save Selection Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/folders/{folder_name}/selection/{image_id}")
+async def remove_folder_selection(folder_name: str, image_id: str):
+    """Remove one image's saved selection from the folder analysis."""
+    try:
+        _validate_image_id(image_id)
+        folder_path = _resolve_folder(folder_name)
+        cache_file = folder_path / ".analysis_cache" / f"{image_id}.json"
+        if not cache_file.exists():
+            raise HTTPException(status_code=404, detail="No saved selection for this image")
+        cache_file.unlink()
+        return {"status": "success", "message": "Selection removed from folder analysis"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/folders/{folder_name}/aggregate")
 async def aggregate_folder(folder_name: str):
     try:
@@ -616,12 +633,17 @@ async def list_images(folder: str = Query(None)):
             # If overlay exists, it's done
             overlay_path = RESULTS_DIR / f"{image_id}_overlay.jpg"
             status = "complete" if overlay_path.exists() else "processing"
-            
+
+            # A saved selection in the folder's analysis cache means this image
+            # has been validated and added to the folder analysis.
+            in_analysis = (path.parent / ".analysis_cache" / f"{image_id}.json").exists()
+
             images.append({
-                "id": image_id, 
+                "id": image_id,
                 "filename": path.name,
                 "display_name": display_name,
-                "status": status
+                "status": status,
+                "in_analysis": in_analysis
             })
     # Sort by newest first (optional, but nice)
     images.sort(key=lambda x: x['display_name'])

@@ -300,6 +300,35 @@
             opacity: 1;
         }
 
+        /* Green tick on images whose selection was added to Folder Analysis.
+           Clicking it (twice, to confirm) removes the image from the analysis. */
+        .analysis-badge {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(40, 167, 69, 0.92);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .analysis-badge.armed {
+            width: auto;
+            border-radius: 14px;
+            padding: 0 12px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #dc3545;
+        }
+
         /* First click arms the button; second click confirms. */
         .delete-btn.armed {
             opacity: 1;
@@ -855,6 +884,19 @@
                         imgWrap.appendChild(overlay);
                     }
 
+                    if (img.in_analysis) {
+                        const badge = document.createElement('button');
+                        badge.className = 'analysis-badge';
+                        badge.textContent = '✓';
+                        badge.title = 'In Folder Analysis — click to remove';
+                        badge.addEventListener('click', (ev) => {
+                            ev.stopPropagation();
+                            armButton(badge, 'Remove from analysis?',
+                                () => removeFromAnalysis(img.id));
+                        });
+                        imgWrap.appendChild(badge);
+                    }
+
                     const delBtn = document.createElement('button');
                     delBtn.className = 'delete-btn';
                     delBtn.textContent = '×';
@@ -909,6 +951,18 @@
             } catch (error) {
                 console.error('Error uploading:', error);
                 alert('Upload failed');
+            }
+        }
+
+        async function removeFromAnalysis(id) {
+            try {
+                const response = await fetch(
+                    `/folders/${encodeURIComponent(currentFolder)}/selection/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' });
+                if (response.ok) loadImages();
+                else alert('Failed to remove from folder analysis');
+            } catch (e) {
+                alert('Error removing from folder analysis');
             }
         }
 

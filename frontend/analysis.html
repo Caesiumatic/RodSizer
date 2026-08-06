@@ -760,8 +760,9 @@
             <button onclick="downloadPDF()" class="btn"
                 style="width: auto; padding: 12px 40px; background-color: #6c757d;">Download PDF Report</button>
             <button id="addToFolderBtn" onclick="addToFolderAnalysis()" class="btn"
-                style="width: auto; padding: 12px 40px; background-color: #28a745; display: none;">Add to Folder
+                style="width: auto; min-width: 280px; padding: 12px 40px; background-color: #28a745; display: none;">Add to Folder
                 Analysis</button>
+            <div id="addToFolderStatus" style="display: none; margin-top: 8px; font-size: 14px;"></div>
         </div>
     </div>
 
@@ -1849,16 +1850,25 @@
                 }
             });
 
+            const btn = document.getElementById('addToFolderBtn');
+            const statusEl = document.getElementById('addToFolderStatus');
+            const showStatus = (msg, color) => {
+                statusEl.textContent = msg;
+                statusEl.style.color = color;
+                statusEl.style.display = 'block';
+            };
+
             if (selectedIds.length === 0) {
-                alert("Please select at least one particle.");
+                showStatus('Select at least one particle first.', '#dc3545');
                 return;
             }
 
+            // Inline feedback on the button itself — popup alert() is blocked
+            // in some embedded browsers, and the instant text swap looked like
+            // a flicker. min-width on the button keeps the layout stable.
             try {
-                const btn = document.getElementById('addToFolderBtn');
-                const originalText = btn.innerText;
-                btn.innerText = "Saving...";
                 btn.disabled = true;
+                statusEl.style.display = 'none';
 
                 const response = await fetch(`/folders/${encodeURIComponent(folderParam)}/save_selection`, {
                     method: 'POST',
@@ -1871,18 +1881,25 @@
 
                 if (response.ok) {
                     const res = await response.json();
-                    alert(`Successfully added ${res.count} particles from this image to folder analysis.`);
+                    btn.innerText = `✓ Added ${res.count} particles`;
+                    btn.style.backgroundColor = '#1e7e34';
                 } else {
-                    const err = await response.json();
-                    alert("Error: " + (err.detail || "Server Error"));
+                    const err = await response.json().catch(() => ({}));
+                    btn.innerText = 'Failed — try again';
+                    btn.style.backgroundColor = '#dc3545';
+                    showStatus('Error: ' + (err.detail || 'Server Error'), '#dc3545');
                 }
-
-                btn.innerText = "Add to Folder Analysis";
-                btn.disabled = false;
             } catch (e) {
                 console.error(e);
-                alert("Failed to save selection.");
-                document.getElementById('addToFolderBtn').innerText = "Add to Folder Analysis";
+                btn.innerText = 'Failed — try again';
+                btn.style.backgroundColor = '#dc3545';
+                showStatus('Could not reach the server.', '#dc3545');
+            } finally {
+                setTimeout(() => {
+                    btn.innerText = 'Add to Folder Analysis';
+                    btn.style.backgroundColor = '#28a745';
+                    btn.disabled = false;
+                }, 2500);
             }
         }
 
