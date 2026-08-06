@@ -241,8 +241,8 @@
         /* --- Gallery --- */
         .gallery {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 25px;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 16px;
         }
 
         .image-card {
@@ -262,7 +262,7 @@
 
         .image-card img {
             width: 100%;
-            height: 200px;
+            height: 110px;
             object-fit: cover;
             display: block;
         }
@@ -347,6 +347,10 @@
         }
 
         /* Overlay */
+        .image-info {
+            font-size: 12px;
+        }
+
         .processing-overlay {
             position: absolute;
             top: 0;
@@ -849,7 +853,7 @@
                     // Image container
                     const imgWrap = document.createElement('div');
                     imgWrap.style.position = 'relative';
-                    imgWrap.style.height = '200px';
+                    imgWrap.style.height = '110px';
                     imgWrap.style.overflow = 'hidden';
 
                     const imgEl = document.createElement('img');
@@ -861,6 +865,9 @@
                         imgEl.src = `/results/${encodeURIComponent(img.id)}_preview.jpg`;
                         imgEl.style.cursor = 'pointer';
                         imgEl.addEventListener('click', () => {
+                            // Remember where we were so returning from the image
+                            // analysis lands back on the same spot, not the top.
+                            sessionStorage.setItem('galleryScroll:' + currentFolder, String(window.scrollY));
                             const params = new URLSearchParams({ id: img.id, folder: currentFolder });
                             window.location.href = `/analysis?${params.toString()}`;
                         });
@@ -874,6 +881,7 @@
                     if (isProcessing) {
                         const overlay = document.createElement('div');
                         overlay.className = 'processing-overlay';
+                        overlay.style.height = '110px';
                         overlay.addEventListener('click', (ev) => ev.stopPropagation());
                         const spinner = document.createElement('div');
                         spinner.className = 'spinner';
@@ -916,6 +924,15 @@
                     card.appendChild(info);
                     gallery.appendChild(card);
                 });
+
+                // Restore the scroll position saved when the user opened an
+                // image from this folder (once, on the first render after
+                // returning). Runs after layout so the offset is valid.
+                const savedScroll = sessionStorage.getItem('galleryScroll:' + currentFolder);
+                if (savedScroll !== null) {
+                    sessionStorage.removeItem('galleryScroll:' + currentFolder);
+                    requestAnimationFrame(() => window.scrollTo(0, parseInt(savedScroll, 10) || 0));
+                }
 
                 // Polling
                 if (hasProcessing) {
