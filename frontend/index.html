@@ -241,8 +241,8 @@
         /* --- Gallery --- */
         .gallery {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 25px;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 16px;
         }
 
         .image-card {
@@ -262,7 +262,7 @@
 
         .image-card img {
             width: 100%;
-            height: 200px;
+            height: 110px;
             object-fit: cover;
             display: block;
         }
@@ -300,7 +300,57 @@
             opacity: 1;
         }
 
+        /* Green tick on images whose selection was added to Folder Analysis.
+           Clicking it (twice, to confirm) removes the image from the analysis. */
+        .analysis-badge {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(40, 167, 69, 0.92);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .analysis-badge.armed {
+            width: auto;
+            border-radius: 14px;
+            padding: 0 12px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #dc3545;
+        }
+
+        /* First click arms the button; second click confirms. */
+        .delete-btn.armed {
+            opacity: 1;
+            width: auto;
+            border-radius: 14px;
+            padding: 0 12px 2px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #dc3545;
+        }
+
+        .btn-danger.armed {
+            background: #a71d2a;
+            outline: 2px solid #dc3545;
+            outline-offset: 1px;
+        }
+
         /* Overlay */
+        .image-info {
+            font-size: 12px;
+        }
+
         .processing-overlay {
             position: absolute;
             top: 0;
@@ -414,7 +464,10 @@
         <div id="folderLedgerView">
             <div class="ledger-header">
                 <h2>Folders</h2>
-                <button class="btn" onclick="createFolder()">+ Create New Folder</button>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-outline" onclick="window.location.href='/compare'">Compare Batches</button>
+                    <button class="btn" onclick="createFolder()">+ Create New Folder</button>
+                </div>
             </div>
 
             <table class="ledger-table">
@@ -445,7 +498,7 @@
                         onclick="openUploadHelp()">Instructions</button>
                     <button class="btn btn-outline" onclick="renameCurrentFolder()">Rename Folder</button>
                     <button class="btn" onclick="viewFolderAnalysis()">View Analysis</button>
-                    <button class="btn btn-danger" onclick="deleteCurrentFolder()">Delete Folder</button>
+                    <button class="btn btn-danger" onclick="deleteCurrentFolder(event)">Delete Folder</button>
                 </div>
             </div>
 
@@ -638,7 +691,7 @@
                     deleteBtn.style.padding = '5px 10px';
                     deleteBtn.style.fontSize = '12px';
                     deleteBtn.textContent = 'Delete';
-                    deleteBtn.addEventListener('click', () => deleteFolderByName(folder));
+                    deleteBtn.addEventListener('click', (ev) => deleteFolderByName(folder, ev));
 
                     actionsCell.appendChild(renameBtn);
                     actionsCell.appendChild(deleteBtn);
@@ -691,10 +744,35 @@
 
         // --- Folder Operations ---
 
-        async function deleteCurrentFolder() {
+        // Two-step in-page confirmation (replaces the browser confirm() popup,
+        // which some embedded browsers block). First click arms the button and
+        // shows the confirm label; a second click within 4s runs the action.
+        function armButton(btn, armedLabel, action) {
+            if (btn.dataset.armed) {
+                clearTimeout(btn._disarmTimer);
+                disarmButton(btn);
+                action();
+                return;
+            }
+            btn.dataset.armed = '1';
+            btn.dataset.origLabel = btn.textContent;
+            btn.textContent = armedLabel;
+            btn.classList.add('armed');
+            btn._disarmTimer = setTimeout(() => disarmButton(btn), 4000);
+        }
+
+        function disarmButton(btn) {
+            if (!btn.dataset.armed) return;
+            delete btn.dataset.armed;
+            btn.textContent = btn.dataset.origLabel || btn.textContent;
+            delete btn.dataset.origLabel;
+            btn.classList.remove('armed');
+        }
+
+        async function deleteCurrentFolder(event) {
             if (!currentFolder) return;
-            if (!confirm(`Permanently delete folder "${currentFolder}"?`)) return;
-            await performDelete(currentFolder);
+            const btn = event.target.closest('button');
+            armButton(btn, 'Really delete?', () => performDelete(currentFolder));
         }
 
         async function renameCurrentFolder() {
@@ -702,9 +780,9 @@
             await renameFolder(currentFolder);
         }
 
-        async function deleteFolderByName(name) {
-            if (!confirm(`Permanently delete folder "${name}"?`)) return;
-            await performDelete(name);
+        async function deleteFolderByName(name, event) {
+            const btn = event.target.closest('button');
+            armButton(btn, 'Really delete?', () => performDelete(name));
         }
 
         async function performDelete(name) {
@@ -775,7 +853,7 @@
                     // Image container
                     const imgWrap = document.createElement('div');
                     imgWrap.style.position = 'relative';
-                    imgWrap.style.height = '200px';
+                    imgWrap.style.height = '110px';
                     imgWrap.style.overflow = 'hidden';
 
                     const imgEl = document.createElement('img');
@@ -787,6 +865,9 @@
                         imgEl.src = `/results/${encodeURIComponent(img.id)}_preview.jpg`;
                         imgEl.style.cursor = 'pointer';
                         imgEl.addEventListener('click', () => {
+                            // Remember where we were so returning from the image
+                            // analysis lands back on the same spot, not the top.
+                            sessionStorage.setItem('galleryScroll:' + currentFolder, String(window.scrollY));
                             const params = new URLSearchParams({ id: img.id, folder: currentFolder });
                             window.location.href = `/analysis?${params.toString()}`;
                         });
@@ -800,6 +881,7 @@
                     if (isProcessing) {
                         const overlay = document.createElement('div');
                         overlay.className = 'processing-overlay';
+                        overlay.style.height = '110px';
                         overlay.addEventListener('click', (ev) => ev.stopPropagation());
                         const spinner = document.createElement('div');
                         spinner.className = 'spinner';
@@ -810,10 +892,26 @@
                         imgWrap.appendChild(overlay);
                     }
 
+                    if (img.in_analysis) {
+                        const badge = document.createElement('button');
+                        badge.className = 'analysis-badge';
+                        badge.textContent = '✓';
+                        badge.title = 'In Folder Analysis — click to remove';
+                        badge.addEventListener('click', (ev) => {
+                            ev.stopPropagation();
+                            armButton(badge, 'Remove from analysis?',
+                                () => removeFromAnalysis(img.id));
+                        });
+                        imgWrap.appendChild(badge);
+                    }
+
                     const delBtn = document.createElement('button');
                     delBtn.className = 'delete-btn';
                     delBtn.textContent = '×';
-                    delBtn.addEventListener('click', (ev) => deleteImage(img.id, ev));
+                    delBtn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        armButton(delBtn, 'Delete?', () => deleteImage(img.id));
+                    });
                     imgWrap.appendChild(delBtn);
 
                     const info = document.createElement('div');
@@ -826,6 +924,15 @@
                     card.appendChild(info);
                     gallery.appendChild(card);
                 });
+
+                // Restore the scroll position saved when the user opened an
+                // image from this folder (once, on the first render after
+                // returning). Runs after layout so the offset is valid.
+                const savedScroll = sessionStorage.getItem('galleryScroll:' + currentFolder);
+                if (savedScroll !== null) {
+                    sessionStorage.removeItem('galleryScroll:' + currentFolder);
+                    requestAnimationFrame(() => window.scrollTo(0, parseInt(savedScroll, 10) || 0));
+                }
 
                 // Polling
                 if (hasProcessing) {
@@ -864,9 +971,19 @@
             }
         }
 
-        async function deleteImage(id, event) {
-            event.stopPropagation();
-            if (!confirm('Delete this image?')) return;
+        async function removeFromAnalysis(id) {
+            try {
+                const response = await fetch(
+                    `/folders/${encodeURIComponent(currentFolder)}/selection/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' });
+                if (response.ok) loadImages();
+                else alert('Failed to remove from folder analysis');
+            } catch (e) {
+                alert('Error removing from folder analysis');
+            }
+        }
+
+        async function deleteImage(id) {
             try {
                 const response = await fetch(`/images/${id}`, { method: 'DELETE' });
                 if (response.ok) loadImages();

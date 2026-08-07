@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Query, BackgroundTasks
+from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -183,6 +184,69 @@ _NO_CACHE_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 def _frontend_page(name: str) -> FileResponse:
     return FileResponse(FRONTEND_DIR / name, headers=_NO_CACHE_HEADERS)
 
+
+# --- Results housekeeping ---
+
+def _safe_unlink(path: Path):
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _valid_upload_ids() -> set:
+    """Stems of every uploaded file (results are named '<stem>_<suffix>')."""
+    ids = set()
+    for p in UPLOAD_DIR.rglob("*"):
+        if p.is_file() and ".analysis_cache" not in p.parts:
+            ids.add(p.stem)
+    return ids
+
+
+def _delete_results_for_ids(image_ids) -> int:
+    removed = 0
+    for res_file in RESULTS_DIR.iterdir():
+        if not res_file.is_file():
+            continue
+        if any(res_file.name.startswith(image_id + "_") for image_id in image_ids):
+            _safe_unlink(res_file)
+            removed += 1
+    return removed
+
+
+def cleanup_results_dir() -> dict:
+    """Remove result files whose source upload no longer exists, plus stale
+    export temp files (>1 day old). Never touches uploads/."""
+    import time
+    valid_ids = _valid_upload_ids()
+    removed_orphans = 0
+    removed_exports = 0
+    now = time.time()
+    for res_file in RESULTS_DIR.iterdir():
+        if not res_file.is_file() or res_file.name.startswith("."):
+            continue
+        if res_file.name.startswith("export_"):
+            # Export temps now self-delete after download; sweep old leftovers.
+            if now - res_file.stat().st_mtime > 86400:
+                _safe_unlink(res_file)
+                removed_exports += 1
+            continue
+        if not any(res_file.name.startswith(image_id + "_") for image_id in valid_ids):
+            _safe_unlink(res_file)
+            removed_orphans += 1
+    return {"orphans": removed_orphans, "stale_exports": removed_exports}
+
+
+@app.on_event("startup")
+async def _startup_cleanup():
+    try:
+        summary = cleanup_results_dir()
+        if summary["orphans"] or summary["stale_exports"]:
+            print(f"Results cleanup: removed {summary['orphans']} orphaned files, "
+                  f"{summary['stale_exports']} stale exports")
+    except Exception as e:
+        print(f"Results cleanup skipped: {e}")
+
 @app.get("/")
 async def read_index():
     return _frontend_page("index.html")
@@ -194,6 +258,10 @@ async def read_analysis():
 @app.get("/folder_analysis")
 async def read_folder_analysis():
     return _frontend_page("folder_analysis.html")
+
+@app.get("/compare")
+async def read_compare():
+    return _frontend_page("compare.html")
 
 # --- Folder Management ---
 
@@ -261,14 +329,16 @@ async def delete_folder(folder_name: str):
         if not folder_path.exists() or not folder_path.is_dir():
             raise HTTPException(status_code=404, detail="Folder not found")
         
+        # Collect the folder's image ids first so their results can be removed too
+        folder_image_ids = {p.stem for p in folder_path.rglob("*")
+                            if p.is_file() and ".analysis_cache" not in p.parts}
+
         # Delete folder and contents
         shutil.rmtree(folder_path)
-        
-        # Also clean up results for images that were in this folder?
-        # Since we don't strictly track which result belongs to which folder in the filename (only ID),
-        # this is tricky unless we scan the deleted files.
-        # For now, let's just delete the upload folder. Orphaned results are harmless but take space.
-        
+
+        if folder_image_ids:
+            _delete_results_for_ids(folder_image_ids)
+
         return {"status": "success", "message": "Folder deleted"}
     except HTTPException:
         raise
@@ -327,6 +397,23 @@ async def save_folder_selection(folder_name: str, req: FolderSelectionRequest):
         print(f"Save Selection Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/folders/{folder_name}/selection/{image_id}")
+async def remove_folder_selection(folder_name: str, image_id: str):
+    """Remove one image's saved selection from the folder analysis."""
+    try:
+        _validate_image_id(image_id)
+        folder_path = _resolve_folder(folder_name)
+        cache_file = folder_path / ".analysis_cache" / f"{image_id}.json"
+        if not cache_file.exists():
+            raise HTTPException(status_code=404, detail="No saved selection for this image")
+        cache_file.unlink()
+        return {"status": "success", "message": "Selection removed from folder analysis"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/folders/{folder_name}/aggregate")
 async def aggregate_folder(folder_name: str):
     try:
@@ -372,9 +459,12 @@ async def aggregate_folder(folder_name: str):
                 "mean_ar": f"{ar_m} ± {ar_s}"
             }
 
+        extended = _processing_function("compute_summary_stats")(combined_data) if combined_data else []
+
         return {
             "data": combined_data,
             "stats": stats,
+            "extended_stats": extended,
             "file_count": len(files)
         }
 
@@ -416,7 +506,8 @@ async def export_aggregate_folder(folder_name: str):
         return FileResponse(
             path=temp_path,
             filename=f"{safe_folder_name}_analysis_report.xlsx",
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=BackgroundTask(_safe_unlink, temp_path)
         )
 
     except Exception as e:
@@ -428,6 +519,7 @@ async def export_aggregate_folder(folder_name: str):
 @app.post("/upload")
 async def upload_images(background_tasks: BackgroundTasks, folder: str = Form(None), files: List[UploadFile] = File(...)):
     uploaded_files = []
+    saved_paths = []
     try:
         if len(files) > MAX_UPLOAD_FILES:
             raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_UPLOAD_FILES} per request)")
@@ -476,36 +568,33 @@ async def upload_images(background_tasks: BackgroundTasks, folder: str = Form(No
             # 1. Generate Immediate Preview (Sync)
             # This ensures the user sees something right away
             _processing_function("generate_preview")(file_path, RESULTS_DIR)
-            
+
             uploaded_files.append({
-                "id": file_path.stem, 
+                "id": file_path.stem,
                 "filename": safe_filename,
                 "status": "processing"
             })
-            
-            # 2. Queue Heavy Processing (Background)
-            # Find matching calibration file (.dm3/.dm4)
-            search_dir = file_path.parent
+            saved_paths.append(file_path)
+
+        # 2. Queue Heavy Processing (Background)
+        # IMPORTANT: calibration lookup happens only after EVERY file in the
+        # batch is saved. Doing it inside the save loop caused a race: an image
+        # saved before its .dm3 partner never got calibrated (upload order is
+        # effectively random, so ~half of paired uploads lost their scale).
+        def _original_stem(name: str) -> str:
+            if len(name) > 37 and name[36] == '_':
+                return Path(name[37:]).stem
+            return Path(name).stem
+
+        for file_path in saved_paths:
             calibration_source_path = None
-            original_stem = None
-            
-            if len(save_name) > 37 and save_name[36] == '_':
-                original_stem = Path(save_name[37:]).stem
-            else:
-                original_stem = Path(save_name).stem
-                
-            for f in search_dir.glob("*"):
-                if f.suffix.lower() in ['.dm3', '.dm4', '.emd']:
-                    dm3_stem = None
-                    if len(f.name) > 37 and f.name[36] == '_':
-                        dm3_stem = Path(f.name[37:]).stem
-                    else:
-                        dm3_stem = f.stem
-                    if dm3_stem == original_stem:
+            target_stem = _original_stem(file_path.name)
+            for f in file_path.parent.glob("*"):
+                if f.suffix.lower() in ['.dm3', '.dm4', '.emd'] and f != file_path:
+                    if _original_stem(f.name) == target_stem:
                         calibration_source_path = f
                         break
-            
-            # Add to background tasks
+
             background_tasks.add_task(
                 _processing_function("process_image"),
                 file_path,
@@ -544,12 +633,17 @@ async def list_images(folder: str = Query(None)):
             # If overlay exists, it's done
             overlay_path = RESULTS_DIR / f"{image_id}_overlay.jpg"
             status = "complete" if overlay_path.exists() else "processing"
-            
+
+            # A saved selection in the folder's analysis cache means this image
+            # has been validated and added to the folder analysis.
+            in_analysis = (path.parent / ".analysis_cache" / f"{image_id}.json").exists()
+
             images.append({
-                "id": image_id, 
+                "id": image_id,
                 "filename": path.name,
                 "display_name": display_name,
-                "status": status
+                "status": status,
+                "in_analysis": in_analysis
             })
     # Sort by newest first (optional, but nice)
     images.sort(key=lambda x: x['display_name'])
@@ -718,11 +812,7 @@ async def export_data(req: ExportRequest):
         temp_path = RESULTS_DIR / temp_name
         
         _processing_function("save_results_to_excel")(filtered_results, temp_path)
-        
-        # We should use BackgroundTasks to clean up, but simpler here:
-        # FileResponse can delete after? using background. 
-        # But allow it to persist is fine for now (results dir is cache).
-        
+
         # Sanitize the suggested download filename — it originates from the
         # uploaded filename and flows into a response header.
         raw_name = data.get("filename") or req.image_id
@@ -731,7 +821,8 @@ async def export_data(req: ExportRequest):
         return FileResponse(
             path=temp_path,
             filename=f"{safe_download_stem}_detected.xlsx",
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=BackgroundTask(_safe_unlink, temp_path)
         )
 
     except HTTPException:
