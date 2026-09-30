@@ -668,6 +668,10 @@
             <div id="calibrationPanel" class="calibration-panel" style="display: none;">
                 <h4 id="calibrationPanelTitle">Scale Calibration</h4>
                 <p id="calibrationPanelNote" style="margin: 0 0 8px 0; color: #6b5a00;">You can recalibrate this image at any time.</p>
+                <div id="useAutoCalRow" style="display: none; margin-bottom: 8px;">
+                    <button class="cal-secondary" onclick="useAutomaticCalibration()">Use automatic calibration (.dm3 / metadata)</button>
+                    <span id="autoCalStatus" style="margin-left: 6px; color: #888;"></span>
+                </div>
                 <div class="cal-option">
                     <label>Pixel size (from image)</label>
                     <p style="margin: 4px 0; color: #555;">If the image states a pixel size (e.g. "250.3 pm"), enter it directly — no line needed.</p>
@@ -821,12 +825,17 @@
                     manualPixelSize = null,
                     requestedBarLengthNm = null,
                     forceReprocess = false,
-                    binaryMaskTune = appliedBinaryMaskTune
+                    binaryMaskTune = appliedBinaryMaskTune,
+                    useAutomaticCalibration = false
                 } = options;
 
-                const resolvedManualPixelSize = manualPixelSize !== null && manualPixelSize !== undefined
-                    ? manualPixelSize
-                    : getActiveManualPixelSize();
+                // useAutomaticCalibration drops a sticky manual override so the
+                // backend falls back to .dm3 / metadata / footer calibration.
+                const resolvedManualPixelSize = useAutomaticCalibration
+                    ? null
+                    : (manualPixelSize !== null && manualPixelSize !== undefined
+                        ? manualPixelSize
+                        : getActiveManualPixelSize());
 
                 let url = `/process/${imageId}`;
                 const params = new URLSearchParams();
@@ -2106,6 +2115,8 @@
         function showCalibrationPanel(calibInfo) {
             const method = calibInfo ? calibInfo.method : 'default';
             const needsCalibration = method === 'default' || method === 'uncalibrated' || (calibInfo && calibInfo.is_placeholder);
+            // A manual value is an optional override; offer the way back.
+            document.getElementById('useAutoCalRow').style.display = method === 'manual' ? 'block' : 'none';
             const panel = document.getElementById('calibrationPanel');
             const toggleBtn = document.getElementById('toggleCalibrationBtn');
             const title = document.getElementById('calibrationPanelTitle');
@@ -2243,6 +2254,23 @@
                     forceReprocess: true
                 });
                 calibrationPanelOpen = false;
+                statusEl.textContent = '';
+            } catch (e) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function useAutomaticCalibration() {
+            const statusEl = document.getElementById('autoCalStatus');
+            statusEl.style.color = '#888';
+            statusEl.textContent = 'Reprocessing...';
+            try {
+                await processImage({
+                    useAutomaticCalibration: true,
+                    binaryMaskTune: appliedBinaryMaskTune,
+                    forceReprocess: true
+                });
                 statusEl.textContent = '';
             } catch (e) {
                 statusEl.style.color = '#dc3545';
