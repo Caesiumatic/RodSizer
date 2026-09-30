@@ -1771,7 +1771,7 @@
             // same size ON SCREEN when zoomed in, so the rods grow but the labels
             // don't — the whole point of zooming into dense, tiny rods.
             const img = document.getElementById('processedImage');
-            const zk = regionZoomK || 1;
+            const zk = (regionZoomK || 1) * (hoverMagnifying ? HOVER_MAG : 1);
             const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / (img.clientWidth * zk)) : 1;
             const baseLine = Math.max(2 / zk, scale * 1.6);   // clearly visible outlines
             const now = performance.now();
@@ -1875,20 +1875,23 @@
             });
         }
 
+        // The hover magnifier stacks ON TOP of the current view (area zoom or
+        // tile), magnifying HOVER_MAG× around the cursor; leaving the image
+        // returns to that view. It never exits tile review or resets a zoom.
+        const HOVER_MAG = 2.5;
+        let hoverMagnifying = false;   // magnifier engaged (cursor over the image)
+
         function toggleZoom() {
             isZoomActive = !isZoomActive;
             if (isZoomActive) {
-                // Hover magnifier, area zoom and tile review are exclusive.
                 if (isSelectingZoom) cancelRegionSelect();
-                if (tileMode) exitTileReview();
-                if (zoomRegion) resetRegionZoom();
                 zoomToggle.classList.add('active');
                 zoomWrapper.style.cursor = 'zoom-in';
             } else {
                 zoomToggle.classList.remove('active');
                 zoomWrapper.style.cursor = 'default';
-                // Reset
-                setImageTransform('50% 50%', 'scale(1)');
+                hoverMagnifying = false;
+                applyRegionZoom();   // back to the area-zoom / tile view (or full image)
             }
         }
 
@@ -1896,19 +1899,30 @@
             if (!isZoomActive) return;
 
             const rect = zoomWrapper.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
+            const cx = e.clientX - rect.left;    // cursor in panel coordinates
+            const cy = e.clientY - rect.top;
 
-            // Calculate percentage
-            const xPercent = (x / rect.width) * 100;
-            const yPercent = (y / rect.height) * 100;
+            // Current base view: area zoom / tile geometry, or the plain fitted image.
+            const g = (zoomRegion && lastZoomGeom) ? lastZoomGeom : { k: 1, tx: 0, ty: 0 };
+            const ox = processedImage.offsetLeft, oy = processedImage.offsetTop;
+            // Magnify the base view by HOVER_MAG about the cursor:
+            // screen = cursor + m * (base_screen - cursor)
+            const m = HOVER_MAG;
+            const k = g.k * m;
+            const tx = m * g.tx + (m - 1) * (ox - cx);
+            const ty = m * g.ty + (m - 1) * (oy - cy);
+            setImageTransform('0 0', `translate(${tx}px, ${ty}px) scale(${k})`);
 
-            setImageTransform(`${xPercent}% ${yPercent}%`, 'scale(2.5)');
+            if (!hoverMagnifying) {
+                hoverMagnifying = true;
+                renderParticleOverlay();   // redraw labels/outlines for the magnified size
+            }
         });
 
         zoomWrapper.addEventListener('mouseleave', function () {
             if (!isZoomActive) return;
-            setImageTransform('50% 50%', 'scale(1)');
+            hoverMagnifying = false;
+            applyRegionZoom();   // restore the area-zoom / tile view (or full image)
         });
 
         // --- Area zoom: drag a box, view stays zoomed until reset ---
@@ -1942,10 +1956,13 @@
 
         function applyRegionZoom() {
             const img = processedImage;
+            // Always shows the base view; the hover magnifier (if on) re-engages
+            // on the next mouse movement, on top of this view.
+            hoverMagnifying = false;
             if (!zoomRegion || !img.naturalWidth || !img.clientWidth) {
                 regionZoomK = 1;
                 lastZoomGeom = null;
-                if (!isZoomActive) setImageTransform('50% 50%', 'none');
+                setImageTransform('0 0', 'none');
                 zoomResetBtn.style.display = 'none';
                 updateZoomHint();
                 renderParticleOverlay();
