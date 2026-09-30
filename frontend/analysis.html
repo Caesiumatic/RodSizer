@@ -444,6 +444,25 @@
             border-color: #0056b3;
         }
 
+        /* Area zoom: stacked under the hover-Zoom button */
+        .zoom-area-btn { top: 46px; }
+        .zoom-reset-btn { top: 82px; }
+
+        #zoomSelectBox {
+            position: absolute;
+            display: none;
+            border: 2px dashed #0a40ff;
+            background: rgba(10, 64, 255, 0.12);
+            pointer-events: none;
+            z-index: 25;
+        }
+
+        /* Keep the overlays moving in lock-step with the image when zooming */
+        #particleOverlayCanvas,
+        #scaleCanvas {
+            transition: transform 0.1s ease-out;
+        }
+
         .label-toggle-btn {
             position: absolute;
             top: 10px;
@@ -481,6 +500,11 @@
         .image-wrapper {
             position: relative;
             overflow: hidden;
+            /* 'clip' (unlike 'hidden') can't be scrolled at all. A zoomed image
+               is far larger than the panel, and a drag could otherwise scroll
+               the panel sideways, pushing buttons off-screen and the zoom
+               off-centre. 'hidden' above is the fallback for older browsers. */
+            overflow: clip;
             width: 100%;
             flex: 1;
             min-height: 0;
@@ -570,6 +594,15 @@
             cursor: crosshair;
             z-index: 20;
         }
+
+        /* Image-panel buttons stay above the particle overlay (15), the scale
+           canvas (20) and the zoom selection box (25), so zoomed-in box
+           outlines never draw over them. */
+        .zoom-btn,
+        .image-toggle-btn,
+        .label-toggle-btn {
+            z-index: 30;
+        }
     </style>
 </head>
 
@@ -643,6 +676,14 @@
                     <button class="zoom-btn" onclick="toggleZoom()" id="zoomToggle">
                         <span style="font-size: 16px;">🔍</span> Zoom
                     </button>
+                    <button class="zoom-btn zoom-area-btn" onclick="startRegionSelect()" id="zoomAreaBtn"
+                        title="Drag a box over part of the image to zoom into it; stays zoomed until you reset">
+                        <span style="font-size: 15px;">⬚</span> Zoom to area
+                    </button>
+                    <button class="zoom-btn zoom-reset-btn" onclick="resetRegionZoom()" id="zoomResetBtn" style="display: none;">
+                        <span style="font-size: 15px;">↺</span> Reset zoom
+                    </button>
+                    <div id="zoomSelectBox"></div>
                     <canvas id="particleOverlayCanvas"></canvas>
                     <canvas id="scaleCanvas" style="display: none;"></canvas>
                     <img id="processedImage" src="" alt="Detected Particles">
@@ -959,7 +1000,7 @@
             maskControls.classList.toggle('visible', isBinary);
             image.onload = () => {
                 syncParticleOverlayToImage();
-                renderParticleOverlay();
+                applyRegionZoom();   // keeps an active area zoom; renders the overlay
             };
             image.src = `${nextUrl}?t=${timestamp}`;
         }
@@ -1638,9 +1679,13 @@
 
             // The canvas is at full image resolution but shown scaled down, so
             // size strokes relative to that ratio to keep them visible.
+            // Dividing by the area-zoom factor keeps outlines and ID numbers the
+            // same size ON SCREEN when zoomed in, so the rods grow but the labels
+            // don't — the whole point of zooming into dense, tiny rods.
             const img = document.getElementById('processedImage');
-            const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / img.clientWidth) : 1;
-            const baseLine = Math.max(2, scale * 1.6);   // clearly visible outlines
+            const zk = regionZoomK || 1;
+            const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / (img.clientWidth * zk)) : 1;
+            const baseLine = Math.max(2 / zk, scale * 1.6);   // clearly visible outlines
             const now = performance.now();
 
             currentData.forEach((rod, index) => {
@@ -1696,11 +1741,11 @@
                     '#ffb6c9',  // 60-69  pink
                     '#00ff9d',  // 70-79  spring green
                 ];
-                const fontPx = Math.max(13 * scale, 11);
+                const fontPx = Math.max(13 * scale, 11 / zk);
                 ctx.font = `bold ${fontPx}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.lineWidth = Math.max(1.5, scale * 1.1);
+                ctx.lineWidth = Math.max(1.5 / zk, scale * 1.1);
                 ctx.lineJoin = 'round';
                 currentData.forEach((rod) => {
                     const label = String(rod.id ?? '');
@@ -1727,6 +1772,9 @@
         function toggleZoom() {
             isZoomActive = !isZoomActive;
             if (isZoomActive) {
+                // Hover magnifier and area zoom are exclusive.
+                if (isSelectingZoom) cancelRegionSelect();
+                if (zoomRegion) resetRegionZoom();
                 zoomToggle.classList.add('active');
                 zoomWrapper.style.cursor = 'zoom-in';
             } else {
@@ -1754,6 +1802,159 @@
         zoomWrapper.addEventListener('mouseleave', function () {
             if (!isZoomActive) return;
             setImageTransform('50% 50%', 'scale(1)');
+        });
+
+        // --- Area zoom: drag a box, view stays zoomed until reset ---
+        // zoomRegion is stored in natural image pixels so it survives window
+        // resizes and image reloads; the CSS transform is recomputed from it.
+        let zoomRegion = null;        // {x, y, w, h} in natural pixels, or null
+        let regionZoomK = 1;          // current zoom factor relative to the fitted view
+        let isSelectingZoom = false;
+        let zoomDragStart = null;     // {x, y} client coords
+        let suppressNextImageClick = false;
+        const zoomSelectBox = document.getElementById('zoomSelectBox');
+        const zoomAreaBtn = document.getElementById('zoomAreaBtn');
+        const zoomResetBtn = document.getElementById('zoomResetBtn');
+        const imagePanelHint = document.getElementById('imagePanelHint');
+        const DEFAULT_HINT = imagePanelHint.textContent.trim();
+
+        function updateZoomHint() {
+            if (isSelectingZoom) {
+                imagePanelHint.textContent = 'Drag a box over the area to zoom into (Esc to cancel)';
+            } else if (zoomRegion) {
+                imagePanelHint.textContent = `Zoomed ${regionZoomK.toFixed(1)}× — click particles to deselect · Esc or "Reset zoom" to return`;
+            } else {
+                imagePanelHint.textContent = DEFAULT_HINT;
+            }
+        }
+
+        function applyRegionZoom() {
+            const img = processedImage;
+            if (!zoomRegion || !img.naturalWidth || !img.clientWidth) {
+                regionZoomK = 1;
+                if (!isZoomActive) setImageTransform('50% 50%', 'none');
+                zoomResetBtn.style.display = 'none';
+                updateZoomHint();
+                renderParticleOverlay();
+                return;
+            }
+            // Base (unzoomed) display scale: CSS px per natural image pixel.
+            const s = img.clientWidth / img.naturalWidth;
+            const W = zoomWrapper.clientWidth, H = zoomWrapper.clientHeight;
+            const rw = zoomRegion.w * s, rh = zoomRegion.h * s;
+            const cx = (zoomRegion.x + zoomRegion.w / 2) * s;
+            const cy = (zoomRegion.y + zoomRegion.h / 2) * s;
+            // Fit the selected box to the panel; cap so one image pixel is at
+            // most ~8 screen pixels (beyond that there is nothing more to see).
+            const kMax = Math.max(1, 8 / s);
+            const k = Math.min(kMax, Math.max(1, 0.98 * Math.min(W / rw, H / rh)));
+            const tx = W / 2 - img.offsetLeft - k * cx;
+            const ty = H / 2 - img.offsetTop - k * cy;
+            regionZoomK = k;
+            setImageTransform('0 0', `translate(${tx}px, ${ty}px) scale(${k})`);
+            zoomResetBtn.style.display = 'flex';
+            updateZoomHint();
+            renderParticleOverlay();
+        }
+
+        function startRegionSelect() {
+            if (isSelectingZoom) { cancelRegionSelect(); return; }
+            if (isZoomActive) toggleZoom();          // the two zoom modes are exclusive
+            if (isDrawingLine) return;              // don't fight the scale-line tool
+            isSelectingZoom = true;
+            zoomAreaBtn.classList.add('active');
+            zoomWrapper.style.cursor = 'crosshair';
+            updateZoomHint();
+        }
+
+        function cancelRegionSelect() {
+            isSelectingZoom = false;
+            zoomDragStart = null;
+            zoomSelectBox.style.display = 'none';
+            zoomAreaBtn.classList.remove('active');
+            zoomWrapper.style.cursor = 'default';
+            updateZoomHint();
+        }
+
+        function resetRegionZoom() {
+            zoomRegion = null;
+            applyRegionZoom();
+        }
+
+        function clientToNatural(clientX, clientY) {
+            // getBoundingClientRect reflects the current transform, so this
+            // works at any zoom level (zooming again from a zoomed view).
+            const r = processedImage.getBoundingClientRect();
+            const nx = (clientX - r.left) * processedImage.naturalWidth / r.width;
+            const ny = (clientY - r.top) * processedImage.naturalHeight / r.height;
+            return {
+                x: Math.min(processedImage.naturalWidth, Math.max(0, nx)),
+                y: Math.min(processedImage.naturalHeight, Math.max(0, ny))
+            };
+        }
+
+        zoomWrapper.addEventListener('mousedown', function (e) {
+            if (!isSelectingZoom || e.button !== 0) return;
+            if (e.target.closest('button')) return;
+            e.preventDefault();                       // no image ghost-drag / text selection
+            zoomDragStart = { x: e.clientX, y: e.clientY };
+            drawZoomSelectBox(e.clientX, e.clientY);
+            zoomSelectBox.style.display = 'block';
+        });
+
+        function drawZoomSelectBox(clientX, clientY) {
+            const wr = zoomWrapper.getBoundingClientRect();
+            const left = Math.min(zoomDragStart.x, clientX) - wr.left;
+            const top = Math.min(zoomDragStart.y, clientY) - wr.top;
+            zoomSelectBox.style.left = `${left}px`;
+            zoomSelectBox.style.top = `${top}px`;
+            zoomSelectBox.style.width = `${Math.abs(clientX - zoomDragStart.x)}px`;
+            zoomSelectBox.style.height = `${Math.abs(clientY - zoomDragStart.y)}px`;
+        }
+
+        window.addEventListener('mousemove', function (e) {
+            if (!isSelectingZoom || !zoomDragStart) return;
+            drawZoomSelectBox(e.clientX, e.clientY);
+        });
+
+        window.addEventListener('mouseup', function (e) {
+            if (!isSelectingZoom || !zoomDragStart) return;
+            const dragW = Math.abs(e.clientX - zoomDragStart.x);
+            const dragH = Math.abs(e.clientY - zoomDragStart.y);
+            // The click that ends a drag must not also toggle a particle.
+            suppressNextImageClick = true;
+            setTimeout(() => { suppressNextImageClick = false; }, 0);
+            if (dragW < 8 || dragH < 8) {             // too small: keep waiting for a real box
+                zoomDragStart = null;
+                zoomSelectBox.style.display = 'none';
+                return;
+            }
+            const a = clientToNatural(zoomDragStart.x, zoomDragStart.y);
+            const b = clientToNatural(e.clientX, e.clientY);
+            const region = {
+                x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+                w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y)
+            };
+            cancelRegionSelect();
+            if (region.w >= 4 && region.h >= 4) {
+                zoomRegion = region;
+                applyRegionZoom();
+            }
+        });
+
+        // Fallback for browsers without overflow:clip — the zoom math assumes
+        // the panel is never scrolled, so undo any scroll the browser applies.
+        zoomWrapper.addEventListener('scroll', function () {
+            if (zoomWrapper.scrollLeft || zoomWrapper.scrollTop) {
+                zoomWrapper.scrollLeft = 0;
+                zoomWrapper.scrollTop = 0;
+            }
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== 'Escape') return;
+            if (isSelectingZoom) cancelRegionSelect();
+            else if (zoomRegion) resetRegionZoom();
         });
 
         async function downloadFilteredReport() {
@@ -2028,7 +2229,7 @@
 
         // --- Click on particle to toggle checkbox ---
         document.getElementById('processedImage').addEventListener('click', function(e) {
-            if (isZoomActive || isDrawingLine) return;
+            if (isZoomActive || isDrawingLine || isSelectingZoom || suppressNextImageClick) return;
             if (!currentData || currentData.length === 0) return;
 
             const img = this;
@@ -2149,6 +2350,7 @@
 
             // Disable zoom while drawing
             if (isZoomActive) toggleZoom();
+            if (isSelectingZoom) cancelRegionSelect();   // an active area zoom can stay: drawing zoomed-in is more precise
 
             if (!syncScaleCanvasToImage()) {
                 alert('Image is still loading. Please try again in a moment.');
@@ -2316,7 +2518,7 @@
 
         window.addEventListener('resize', function() {
             syncParticleOverlayToImage();
-            renderParticleOverlay();
+            applyRegionZoom();   // re-fit an active area zoom; renders the overlay
             if (scaleCanvas.style.display === 'block') {
                 syncScaleCanvasToImage();
             }
