@@ -673,7 +673,7 @@
                     <p style="margin: 4px 0; color: #555;">If the image states a pixel size (e.g. "250.3 pm"), enter it directly — no line needed.</p>
                     <div style="margin-top: 6px;">
                         <input type="number" id="pixelSizeInput" placeholder="e.g. 250.3" min="0" step="any" style="width: 110px;">
-                        <select id="pixelSizeUnit" style="padding: 4px;">
+                        <select id="pixelSizeUnitSelect" style="padding: 4px;">
                             <option value="pm" selected>pm/px</option>
                             <option value="angstrom">Å/px</option>
                             <option value="nm">nm/px</option>
@@ -2211,7 +2211,7 @@
         async function applyPixelSize() {
             const statusEl = document.getElementById('pixelSizeStatus');
             const raw = parseFloat(document.getElementById('pixelSizeInput').value);
-            const unit = document.getElementById('pixelSizeUnit').value;
+            const unit = document.getElementById('pixelSizeUnitSelect').value;
             if (!raw || raw <= 0) {
                 statusEl.style.color = '#dc3545';
                 statusEl.textContent = 'Enter a valid pixel size.';
@@ -2219,10 +2219,16 @@
             }
 
             // Convert the entered pixel size to nm per pixel (the app's native unit).
-            let pixelSizeNm;
-            if (unit === 'pm') pixelSizeNm = raw / 1000;        // 250.3 pm -> 0.2503 nm
-            else if (unit === 'angstrom') pixelSizeNm = raw / 10; // 2.503 Å -> 0.2503 nm
-            else pixelSizeNm = raw;                              // already nm
+            // An unrecognised unit is an error, never silently treated as nm —
+            // a wrong unit would make every measurement wrong by 10-1000x.
+            const NM_PER_UNIT = { pm: 0.001, angstrom: 0.1, nm: 1 };
+            if (!(unit in NM_PER_UNIT)) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = `Unknown unit "${unit}".`;
+                return;
+            }
+            // 250.3 pm -> 0.2503 nm (toPrecision trims float noise like 0.30000000000000004)
+            const pixelSizeNm = Number((raw * NM_PER_UNIT[unit]).toPrecision(12));
 
             // Hide the draw-line canvas if it happens to be open.
             scaleCanvas.style.display = 'none';
