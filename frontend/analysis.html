@@ -669,8 +669,22 @@
                 <h4 id="calibrationPanelTitle">Scale Calibration</h4>
                 <p id="calibrationPanelNote" style="margin: 0 0 8px 0; color: #6b5a00;">You can recalibrate this image at any time.</p>
                 <div class="cal-option">
-                    <label>Manual</label>
-                    <p style="margin: 4px 0; color: #555;">Draw a line along the scale bar in the image, then enter its length.</p>
+                    <label>Pixel size (from image)</label>
+                    <p style="margin: 4px 0; color: #555;">If the image states a pixel size (e.g. "250.3 pm"), enter it directly — no line needed.</p>
+                    <div style="margin-top: 6px;">
+                        <input type="number" id="pixelSizeInput" placeholder="e.g. 250.3" min="0" step="any" style="width: 110px;">
+                        <select id="pixelSizeUnit" style="padding: 4px;">
+                            <option value="pm" selected>pm/px</option>
+                            <option value="angstrom">Å/px</option>
+                            <option value="nm">nm/px</option>
+                        </select>
+                        <button onclick="applyPixelSize()" style="margin-left: 4px;">Set Pixel Size</button>
+                        <span id="pixelSizeStatus" style="margin-left: 6px; color: #888;"></span>
+                    </div>
+                </div>
+                <div class="cal-option">
+                    <label>Scale bar</label>
+                    <p style="margin: 4px 0; color: #555;">Or draw a line along the scale bar in the image, then enter its length.</p>
                     <button id="drawLineBtn" onclick="startDrawLine()">Draw Line on Image</button>
                     <span id="lineStatus" style="margin-left: 6px; color: #888;"></span>
                     <div style="margin-top: 6px;">
@@ -2193,6 +2207,42 @@
             scaleCtx.lineTo(x, y);
             scaleCtx.stroke();
         });
+
+        async function applyPixelSize() {
+            const statusEl = document.getElementById('pixelSizeStatus');
+            const raw = parseFloat(document.getElementById('pixelSizeInput').value);
+            const unit = document.getElementById('pixelSizeUnit').value;
+            if (!raw || raw <= 0) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Enter a valid pixel size.';
+                return;
+            }
+
+            // Convert the entered pixel size to nm per pixel (the app's native unit).
+            let pixelSizeNm;
+            if (unit === 'pm') pixelSizeNm = raw / 1000;        // 250.3 pm -> 0.2503 nm
+            else if (unit === 'angstrom') pixelSizeNm = raw / 10; // 2.503 Å -> 0.2503 nm
+            else pixelSizeNm = raw;                              // already nm
+
+            // Hide the draw-line canvas if it happens to be open.
+            scaleCanvas.style.display = 'none';
+            scaleCtx.clearRect(0, 0, scaleCanvas.width, scaleCanvas.height);
+
+            statusEl.style.color = '#888';
+            statusEl.textContent = `Reprocessing at ${pixelSizeNm.toFixed(4)} nm/px...`;
+            try {
+                await processImage({
+                    manualPixelSize: pixelSizeNm,
+                    binaryMaskTune: appliedBinaryMaskTune,
+                    forceReprocess: true
+                });
+                calibrationPanelOpen = false;
+                statusEl.textContent = '';
+            } catch (e) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Error: ' + e.message;
+            }
+        }
 
         async function applyManualScale() {
             const nmValue = parseFloat(document.getElementById('scaleNmInput').value);
