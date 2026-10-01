@@ -9,14 +9,76 @@ import shutil
 import os
 import uuid
 import re
+import io
+import base64
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 import json
 
 class ExportRequest(BaseModel):
     image_id: str
     selected_ids: List[int]
+    # Optional annotated image (data URL, JPEG/PNG) rendered by the analysis
+    # page: the image with included/excluded boxes and particle IDs. Embedded
+    # in the Excel report on its own sheet.
+    annotated_image: Optional[str] = None
+
+
+MAX_REPORT_IMAGE_BYTES = 20 * 1024 * 1024   # decoded size cap for the embedded image
+
+
+def _decode_report_image(data_url: str) -> bytes:
+    """Decode and validate a 'data:image/(png|jpeg);base64,...' string."""
+    from fastapi import HTTPException as _HTTPException
+    m = re.match(r'^data:image/(png|jpeg);base64,(.+)$', data_url or '', re.S)
+    if not m:
+        raise _HTTPException(status_code=400, detail="Invalid annotated image")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except Exception:
+        raise _HTTPException(status_code=400, detail="Invalid annotated image encoding")
+    if len(raw) > MAX_REPORT_IMAGE_BYTES:
+        raise _HTTPException(status_code=413, detail="Annotated image too large")
+    from PIL import Image as PILImage
+    try:
+        with PILImage.open(io.BytesIO(raw)) as im:
+            im.verify()
+    except Exception:
+        raise _HTTPException(status_code=400, detail="Annotated image is not a valid image")
+    return raw
+
+
+def _add_report_extras(xlsx_path: Path, image_bytes: Optional[bytes], info_rows):
+    """Append report info to the Statistics sheet and, if given, embed the
+    annotated image on its own sheet (placed right after Statistics)."""
+    from openpyxl import load_workbook
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, Font
+
+    wb = load_workbook(xlsx_path)
+    ws = wb["Statistics"]
+    ws.append([])
+    ws.append(["Report info"])
+    ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+    for key, value in info_rows:
+        ws.append([key, value])
+        ws.cell(row=ws.max_row, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 70
+
+    if image_bytes:
+        img_ws = wb.create_sheet("Annotated image", 1)
+        img_ws["A1"] = ("Solid blue boxes: included particles · dashed orange: excluded · "
+                        "numbers are particle IDs (see the Data sheet).")
+        img_ws["A1"].font = Font(italic=True)
+        xl_img = XLImage(io.BytesIO(image_bytes))
+        # Show at a comfortable on-screen width; full resolution is kept in the file.
+        scale = min(1.0, 1100 / max(1, xl_img.width))
+        xl_img.width, xl_img.height = int(xl_img.width * scale), int(xl_img.height * scale)
+        img_ws.add_image(xl_img, "A3")
+
+    wb.save(xlsx_path)
     
 app = FastAPI(title="RodSizer")
 
@@ -803,15 +865,32 @@ async def export_data(req: ExportRequest):
         # Frontend ensures at least one is selected ideally, or we export empty.
         
         filtered_results = [r for r in full_results if r["id"] in req.selected_ids]
-        
+
         if not filtered_results:
              raise HTTPException(status_code=400, detail="No particles selected")
+
+        image_bytes = _decode_report_image(req.annotated_image) if req.annotated_image else None
 
         # Generate Temp Excel
         temp_name = f"export_{req.image_id}_{uuid.uuid4().hex[:8]}.xlsx"
         temp_path = RESULTS_DIR / temp_name
-        
+
         _processing_function("save_results_to_excel")(filtered_results, temp_path)
+
+        # Report info + annotated image (image, calibration, selection).
+        selected = set(req.selected_ids)
+        excluded_ids = sorted(r["id"] for r in full_results if r["id"] not in selected)
+        calib = data.get("calibration_info") or {}
+        is_placeholder = bool(calib.get("is_placeholder")) or calib.get("method") in ("default", "uncalibrated")
+        px = data.get("pixel_size_nm")
+        info_rows = [
+            ("Source image", data.get("filename") or req.image_id),
+            ("Calibration", (calib.get("description") or calib.get("method") or "unknown")),
+            ("Pixel size", "uncalibrated (sizes in px)" if is_placeholder or not px else f"{float(px):.4f} nm/px"),
+            ("Particles included", f"{len(filtered_results)} of {len(full_results)}"),
+            ("Excluded particle IDs", ", ".join(str(i) for i in excluded_ids) if excluded_ids else "none"),
+        ]
+        _add_report_extras(temp_path, image_bytes, info_rows)
 
         # Sanitize the suggested download filename — it originates from the
         # uploaded filename and flows into a response header.

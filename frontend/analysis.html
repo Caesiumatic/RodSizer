@@ -9,6 +9,10 @@
     <link rel="icon" type="image/png" href="/static/assets/loading_screen.png">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- jsPDF + autotable: the single-image PDF report is laid out directly
+         (real text, tables that break across pages with repeated headers). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -901,7 +905,7 @@
         <div style="text-align: center; margin-top: 20px; display: flex; gap: 10px; justify-content: center;">
             <a id="downloadExcel" href="#" class="btn" style="width: auto; padding: 12px 40px;">Download Excel
                 Report</a>
-            <button onclick="downloadPDF()" class="btn"
+            <button onclick="downloadPDF()" class="btn" id="downloadPdfBtn"
                 style="width: auto; padding: 12px 40px; background-color: #6c757d;">Download PDF Report</button>
             <button id="addToFolderBtn" onclick="addToFolderAnalysis()" class="btn"
                 style="width: auto; min-width: 280px; padding: 12px 40px; background-color: #28a745; display: none;">Add to Folder
@@ -1544,10 +1548,12 @@
                 const meanWidth = widths.reduce((a, b) => a + b, 0) / count;
                 const meanAR = ars.reduce((a, b) => a + b, 0) / count;
 
-                // Std Dev
-                const stdLength = Math.sqrt(lengths.map(x => Math.pow(x - meanLength, 2)).reduce((a, b) => a + b, 0) / count);
-                const stdWidth = Math.sqrt(widths.map(x => Math.pow(x - meanWidth, 2)).reduce((a, b) => a + b, 0) / count);
-                const stdAR = Math.sqrt(ars.map(x => Math.pow(x - meanAR, 2)).reduce((a, b) => a + b, 0) / count);
+                // Sample standard deviation (n − 1), matching the Excel export,
+                // folder analysis and PDF report.
+                const sdDen = Math.max(1, count - 1);
+                const stdLength = Math.sqrt(lengths.map(x => Math.pow(x - meanLength, 2)).reduce((a, b) => a + b, 0) / sdDen);
+                const stdWidth = Math.sqrt(widths.map(x => Math.pow(x - meanWidth, 2)).reduce((a, b) => a + b, 0) / sdDen);
+                const stdAR = Math.sqrt(ars.map(x => Math.pow(x - meanAR, 2)).reduce((a, b) => a + b, 0) / sdDen);
 
                 document.getElementById('count').textContent = count;
                 document.getElementById('meanLength').textContent = meanLength.toFixed(1) + ' ± ' + stdLength.toFixed(1);
@@ -1751,6 +1757,19 @@
             }
         }
 
+        // ID label colour by decade (0s yellow, 10s magenta, 20s green, 30s cyan,
+        // 40s red, ...), shared by the on-screen overlay and the report images.
+        const ID_DECADE_COLORS = [
+            '#ffee00',  //  0-9   yellow
+            '#ff35ff',  // 10-19  magenta
+            '#35e635',  // 20-29  green
+            '#00e5ff',  // 30-39  cyan
+            '#ff3b30',  // 40-49  red
+            '#ff9500',  // 50-59  orange
+            '#ffb6c9',  // 60-69  pink
+            '#00ff9d',  // 70-79  spring green
+        ];
+
         function pathParticle(ctx, corners) {
             ctx.beginPath();
             ctx.moveTo(corners[0].x, corners[0].y);
@@ -1835,16 +1854,7 @@
             // cyan, 40s red, ...) so e.g. "34" is found at a glance among the
             // cyan numbers. Black outline keeps every hue readable.
             if (showLabels) {
-                const decadeColors = [
-                    '#ffee00',  //  0-9   yellow
-                    '#ff35ff',  // 10-19  magenta
-                    '#35e635',  // 20-29  green
-                    '#00e5ff',  // 30-39  cyan
-                    '#ff3b30',  // 40-49  red
-                    '#ff9500',  // 50-59  orange
-                    '#ffb6c9',  // 60-69  pink
-                    '#00ff9d',  // 70-79  spring green
-                ];
+                const decadeColors = ID_DECADE_COLORS;
                 const fontPx = Math.max(13 * scale, 11 / zk);
                 ctx.font = `bold ${fontPx}px sans-serif`;
                 ctx.textAlign = 'center';
@@ -2281,12 +2291,21 @@
                 const originalText = downloadBtn.innerText;
                 downloadBtn.innerText = "Generating Report...";
 
+                // Annotated image (included/excluded boxes + IDs) for its own sheet.
+                let annotatedImage = null;
+                try {
+                    annotatedImage = (await renderAnnotatedImage(2000)).toDataURL('image/jpeg', 0.85);
+                } catch (e) {
+                    console.error('Annotated image for Excel failed; exporting without it:', e);
+                }
+
                 const response = await fetch('/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         image_id: imageId,
-                        selected_ids: selectedIds
+                        selected_ids: selectedIds,
+                        annotated_image: annotatedImage
                     })
                 });
 
@@ -2297,7 +2316,7 @@
                     a.href = url;
                     // Use filename from response header if possible, or fallback to currentFilename
                     // But simpler: just use our known filename format
-                    a.download = `${currentFilename || imageId}_detected.xlsx`;
+                    a.download = `${(currentFilename || imageId).replace(/\.[^.]+$/, '')}_detected.xlsx`;
                     document.body.appendChild(a);
                     a.click();
                     a.remove();
@@ -2439,93 +2458,259 @@
             }
         }
 
-        async function downloadPDF() {
-            const element = document.getElementById('analysisResults');
+        // ===================== Reports (PDF + Excel image) =====================
 
-            // Create a temporary container for PDF generation
-            const pdfContainer = document.createElement('div');
-            pdfContainer.style.width = '100%';
-            pdfContainer.style.background = 'white';
-            pdfContainer.style.padding = '20px';
+        function reportUnit() {
+            return currentIsPlaceholderCalibration ? 'px' : 'nm';
+        }
 
-            // Add Header Info
-            const title = document.createElement('h2');
-            title.innerText = `Analysis Report: ${currentFilename}`;
-            title.style.textAlign = 'center';
-            title.style.marginBottom = '20px';
-            pdfContainer.appendChild(title);
+        function collectSelection() {
+            const included = [], excluded = [];
+            currentData.forEach((rod, idx) => (getCheckboxStateByIndex(idx) ? included : excluded).push(rod));
+            const byId = (a, b) => (a.id ?? 0) - (b.id ?? 0);
+            return { included: included.sort(byId), excluded: excluded.sort(byId), total: currentData.length };
+        }
 
-            // Add the currently displayed image (resized for PDF)
-            const imgContainer = document.createElement('div');
-            imgContainer.style.display = 'flex';
-            imgContainer.style.justifyContent = 'center';
-            imgContainer.style.marginBottom = '20px';
-            imgContainer.style.height = '350px';
-
-            // Composite the base image with the live overlay (boxes, IDs and the
-            // current selection state) so the report matches what is on screen.
-            const img2 = document.createElement('img');
-            try {
-                const srcImg = document.getElementById('processedImage');
-                renderParticleOverlay();
-                const composite = document.createElement('canvas');
-                composite.width = srcImg.naturalWidth || particleOverlayCanvas.width;
-                composite.height = srcImg.naturalHeight || particleOverlayCanvas.height;
-                const cctx = composite.getContext('2d');
-                cctx.drawImage(srcImg, 0, 0, composite.width, composite.height);
-                cctx.drawImage(particleOverlayCanvas, 0, 0, composite.width, composite.height);
-                img2.src = composite.toDataURL('image/jpeg', 0.9);
-            } catch (e) {
-                console.error('Overlay composite failed, using plain image:', e);
-                img2.src = document.getElementById('processedImage').src;
-            }
-            img2.style.maxHeight = '100%';
-            img2.style.maxWidth = '80%';
-            img2.style.objectFit = 'contain';
-            img2.style.transform = 'none';
-            imgContainer.appendChild(img2);
-            pdfContainer.appendChild(imgContainer);
-
-            // Clone Results Section
-            const clonedContent = element.cloneNode(true);
-
-            // Remove buttons from PDF
-            const buttons = clonedContent.querySelectorAll('button, a.btn');
-            buttons.forEach(btn => btn.remove());
-
-            // Replace Chart Canvases with Images (Crucial for PDF)
-            const originalCanvases = element.querySelectorAll('canvas');
-            const clonedCanvases = clonedContent.querySelectorAll('canvas');
-
-            originalCanvases.forEach((origCanvas, index) => {
-                if (!clonedCanvases[index]) return;
-                try {
-                    const imgData = origCanvas.toDataURL('image/png');
-                    const img = document.createElement('img');
-                    img.src = imgData;
-                    img.style.width = '100%';
-                    img.style.maxHeight = '200px';
-                    img.style.objectFit = 'contain';
-                    img.style.display = 'block';
-
-                    const clonedCanvas = clonedCanvases[index];
-                    clonedCanvas.parentNode.replaceChild(img, clonedCanvas);
-                } catch (e) {
-                    console.error("Chart capture error:", e);
-                }
-            });
-
-            pdfContainer.appendChild(clonedContent);
-
-            const opt = {
-                margin: 0.5,
-                filename: `${currentFilename}_report.pdf`,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true },
-                jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
+        // Same definitions as the Excel export (pandas): sample SD (n−1),
+        // linearly interpolated percentiles.
+        function summaryStats(values) {
+            const v = values.filter(Number.isFinite).sort((a, b) => a - b);
+            const n = v.length;
+            if (!n) return null;
+            const mean = v.reduce((a, b) => a + b, 0) / n;
+            const sd = n > 1 ? Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)) : 0;
+            return {
+                n, mean, sd,
+                median: _quantile(v, 0.5), d10: _quantile(v, 0.10), d90: _quantile(v, 0.90),
+                cv: mean ? sd / mean * 100 : 0, min: v[0], max: v[n - 1]
             };
+        }
 
-            html2pdf().set(opt).from(pdfContainer).save();
+        function loadImage(url) {
+            return new Promise((resolve, reject) => {
+                const im = new Image();
+                im.onload = () => resolve(im);
+                im.onerror = () => reject(new Error('Could not load image for the report'));
+                im.src = url;
+            });
+        }
+
+        // The full image with every particle box (solid blue = included, dashed
+        // orange = excluded) and colour-coded IDs. Independent of the on-screen
+        // zoom/tile state, so the report always looks the same.
+        async function renderAnnotatedImage(maxSide = 3000) {
+            const base = await loadImage(currentImageUrls.processed || processedImage.src);
+            const nw = base.naturalWidth, nh = base.naturalHeight;
+            const f = Math.min(1, maxSide / Math.max(nw, nh));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(nw * f);
+            canvas.height = Math.round(nh * f);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(base, 0, 0, canvas.width, canvas.height);
+
+            // Label/line size follow the typical rod size in the output, so dense
+            // images of tiny rods stay readable when zoomed in the PDF.
+            const shorts = currentData.map(r => r.width_nm / currentPixelSize * f).filter(x => x > 0).sort((a, b) => a - b);
+            const medShort = shorts.length ? shorts[Math.floor(shorts.length / 2)] : 20;
+            const fontPx = Math.max(9, Math.min(26, medShort * 0.65));
+            const lineW = Math.max(1.5, Math.min(4, fontPx / 7));
+
+            ctx.save();
+            ctx.scale(f, f);                 // boxes are in natural-image pixels
+            currentData.forEach((rod, idx) => {
+                const sel = getCheckboxStateByIndex(idx);
+                pathParticle(ctx, getParticleBoxPoints(rod));
+                ctx.setLineDash(sel ? [] : [lineW * 3 / f, lineW * 2.5 / f]);
+                ctx.lineWidth = lineW / f;
+                ctx.strokeStyle = sel ? '#0a40ff' : '#ff8c00';
+                ctx.stroke();
+            });
+            ctx.restore();
+            ctx.setLineDash([]);
+
+            ctx.font = `bold ${fontPx}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(2, fontPx / 6);
+            currentData.forEach(rod => {
+                const label = String(rod.id ?? '');
+                if (!label) return;
+                const x = rod.centroid_x * f, y = rod.centroid_y * f;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+                ctx.strokeText(label, x, y);
+                ctx.fillStyle = ID_DECADE_COLORS[Math.floor((rod.id ?? 0) / 10) % ID_DECADE_COLORS.length];
+                ctx.fillText(label, x, y);
+            });
+            return canvas;
+        }
+
+        function finishedChartImage(chart) {
+            if (!chart) return null;
+            try {
+                chart.stop();
+                chart.update('none');      // finish drawing instantly (no half-animated bars)
+                return { data: chart.canvas.toDataURL('image/png'), w: chart.canvas.width, h: chart.canvas.height };
+            } catch (e) {
+                console.error('Chart capture failed:', e);
+                return null;
+            }
+        }
+
+        async function downloadPDF() {
+            if (!currentData || !currentData.length) { alert('No particles to report.'); return; }
+            if (!window.jspdf || !window.jspdf.jsPDF) {
+                alert('PDF library not loaded — check the internet connection and reload the page.');
+                return;
+            }
+            const btn = document.getElementById('downloadPdfBtn');
+            const btnText = btn ? btn.textContent : '';
+            if (btn) { btn.textContent = 'Building PDF…'; btn.disabled = true; }
+            try {
+                calculateAnalysis(true);   // statistics + histograms reflect the current selection
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+                const PW = 210, PH = 297, M = 14, CW = PW - 2 * M;
+                const unit = reportUnit();
+                const sel = collectSelection();
+                const nameStem = (currentFilename || imageId).replace(/\.[^.]+$/, '');
+                const calibText = (document.getElementById('calibrationMethod').textContent || '-').trim();
+                const pxText = currentIsPlaceholderCalibration ? 'uncalibrated (sizes in px)' : `${currentPixelSize.toFixed(4)} nm/px`;
+
+                // ---- Page 1: header, annotated image, statistics ----
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+                doc.text('RodSizer particle size report', M, 16);
+                doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                const meta = [
+                    `Image: ${currentFilename || imageId}`,
+                    folderParam ? `Folder: ${folderParam}` : null,
+                    `Calibration: ${calibText}  ·  Pixel size: ${pxText}`,
+                    `Generated: ${new Date().toLocaleString()}`
+                ].filter(Boolean);
+                doc.text(meta, M, 22);
+                let y = 22 + meta.length * 4.4 + 2;
+
+                // 2400 px keeps rods zoomable in the PDF viewer at a sensible file size.
+                const imgCanvas = await renderAnnotatedImage(2400);
+                const maxImgH = 150;
+                let iw = CW, ih = iw * imgCanvas.height / imgCanvas.width;
+                if (ih > maxImgH) { ih = maxImgH; iw = ih * imgCanvas.width / imgCanvas.height; }
+                doc.addImage(imgCanvas.toDataURL('image/jpeg', 0.82), 'JPEG', M + (CW - iw) / 2, y, iw, ih);
+                y += ih + 4;
+                doc.setFontSize(8.5); doc.setTextColor(90);
+                doc.text(`Solid blue boxes: included (${sel.included.length})  ·  dashed orange: excluded (${sel.excluded.length})  ·  numbers are particle IDs (listed on the following pages)`, M, y);
+                doc.setTextColor(0);
+                y += 6;
+
+                const L = summaryStats(sel.included.map(r => Number(r.length_nm)));
+                const Wd = summaryStats(sel.included.map(r => Number(r.width_nm)));
+                const AR = summaryStats(sel.included.map(r => Number(r.aspect_ratio)));
+                const f1 = x => x.toFixed(1), f2 = x => x.toFixed(2);
+                const rowsFor = (label, fn) => [label, fn(L), fn(Wd), fn(AR)];
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text('Statistics (included particles)', M, y);
+                if (L) {
+                    doc.autoTable({
+                        startY: y + 2,
+                        margin: { left: M, right: M },
+                        head: [['', `Length (${unit})`, `Width (${unit})`, 'Aspect ratio']],
+                        body: [
+                            rowsFor('Mean ± SD', s => s === AR ? `${f2(s.mean)} ± ${f2(s.sd)}` : `${f1(s.mean)} ± ${f1(s.sd)}`),
+                            rowsFor('Median', s => s === AR ? f2(s.median) : f1(s.median)),
+                            rowsFor('D10 – D90', s => s === AR ? `${f2(s.d10)} – ${f2(s.d90)}` : `${f1(s.d10)} – ${f1(s.d90)}`),
+                            rowsFor('CV (%)', s => f1(s.cv)),
+                            rowsFor('Min – Max', s => s === AR ? `${f2(s.min)} – ${f2(s.max)}` : `${f1(s.min)} – ${f1(s.max)}`),
+                        ],
+                        theme: 'grid',
+                        styles: { fontSize: 9, cellPadding: 1.6, halign: 'center' },
+                        columnStyles: { 0: { halign: 'left', fontStyle: 'bold' } },
+                        headStyles: { fillColor: [0, 123, 255] }
+                    });
+                    y = doc.lastAutoTable.finalY + 5;
+                    const rodYield = sel.included.filter(r => Number(r.aspect_ratio) >= 1.5).length / sel.included.length * 100;
+                    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                    doc.text(`Particles included: ${sel.included.length} of ${sel.total}  ·  Rod yield (AR >= 1.5): ${rodYield.toFixed(1)}%  ·  SD is the sample standard deviation (n-1).`, M, y);
+                } else {
+                    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                    doc.text('No particles are included.', M, y + 6);
+                }
+
+                // ---- Page 2: histograms + included particles ----
+                doc.addPage();
+                y = 16;
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text('Size distributions (included particles)', M, y);
+                y += 3;
+                const charts = [finishedChartImage(lengthChartInstance), finishedChartImage(widthChartInstance)].filter(Boolean);
+                if (charts.length) {
+                    const gap = 4, cw = (CW - gap) / 2;
+                    let maxH = 0;
+                    charts.forEach((c, i) => {
+                        const ch = cw * c.h / c.w;
+                        doc.addImage(c.data, 'PNG', M + i * (cw + gap), y, cw, ch);
+                        maxH = Math.max(maxH, ch);
+                    });
+                    y += maxH + 7;
+                }
+
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text(`Included particles (${sel.included.length})`, M, y);
+                // Three particles per table row keeps a 500-rod list to a few pages.
+                const per = 3, body = [];
+                const fmt = r => [String(r.id ?? ''), f1(Number(r.length_nm)), f1(Number(r.width_nm)), f2(Number(r.aspect_ratio))];
+                for (let i = 0; i < sel.included.length; i += per) {
+                    const row = [];
+                    for (let j = 0; j < per; j++) {
+                        const r = sel.included[i + j];
+                        row.push(...(r ? fmt(r) : ['', '', '', '']));
+                    }
+                    body.push(row);
+                }
+                const headGroup = ['ID', `L (${unit})`, `W (${unit})`, 'AR'];
+                doc.autoTable({
+                    startY: y + 2,
+                    margin: { left: M, right: M, top: 14 },
+                    head: [[...headGroup, ...headGroup, ...headGroup]],
+                    body,
+                    theme: 'striped',
+                    styles: { fontSize: 7.5, cellPadding: 1, halign: 'center' },
+                    headStyles: { fillColor: [0, 123, 255] },
+                    // Visual separation between the three column groups.
+                    didParseCell: data => { if (data.column.index % 4 === 0) data.cell.styles.fontStyle = 'bold'; },
+                    willDrawCell: data => {
+                        if (data.column.index % 4 === 0 && data.column.index > 0) {
+                            doc.setDrawColor(150); doc.setLineWidth(0.3);
+                            doc.line(data.cell.x, data.cell.y, data.cell.x, data.cell.y + data.cell.height);
+                        }
+                    }
+                });
+                y = doc.lastAutoTable.finalY + 7;
+
+                // Excluded particle IDs (so the selection can be reproduced).
+                const exText = sel.excluded.length ? sel.excluded.map(r => r.id).join(', ') : 'none';
+                const exLines = doc.splitTextToSize(exText, CW);
+                if (y + 6 + exLines.length * 3.6 > PH - 14) { doc.addPage(); y = 16; }
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text(`Excluded particles (${sel.excluded.length})`, M, y);
+                doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+                doc.text(exLines, M, y + 5);
+
+                // Footer on every page.
+                const pages = doc.getNumberOfPages();
+                for (let p = 1; p <= pages; p++) {
+                    doc.setPage(p);
+                    doc.setFontSize(8); doc.setTextColor(130);
+                    doc.text(`${nameStem}  ·  page ${p} of ${pages}`, PW / 2, PH - 7, { align: 'center' });
+                    doc.setTextColor(0);
+                }
+
+                doc.save(`${nameStem}_report.pdf`);
+            } catch (e) {
+                console.error('PDF report failed:', e);
+                alert('Could not build the PDF report: ' + e.message);
+            } finally {
+                if (btn) { btn.textContent = btnText; btn.disabled = false; }
+            }
         }
 
         // --- Click on particle to toggle checkbox ---
