@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compare Batches - RodSizer</title>
+    <link rel="icon" type="image/png" href="/static/assets/loading_screen.png">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f8f9fa;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1, h2 {
+            text-align: center;
+            color: #333;
+        }
+
+        .back-btn {
+            color: #666;
+            text-decoration: none;
+            font-size: 15px;
+        }
+
+        .back-btn:hover { color: #007bff; }
+
+        .picker {
+            background: #f1f3f5;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0 30px;
+        }
+
+        .picker-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 22px;
+            margin-bottom: 15px;
+        }
+
+        .picker-list label {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 15px;
+            color: #333;
+            cursor: pointer;
+        }
+
+        .swatch {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            flex: none;
+        }
+
+        .compare-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 6px;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        .compare-btn:hover { background: #0069d9; }
+        .compare-btn:disabled { background: #adb5bd; cursor: default; }
+
+        .hint { color: #666; font-size: 13px; margin-left: 12px; }
+
+        .chart-card {
+            border: 1px solid #eee;
+            border-radius: 8px;
+            background: white;
+            padding: 14px;
+            margin-bottom: 22px;
+        }
+
+        .chart-card h3 {
+            margin: 2px 0 10px;
+            font-size: 16px;
+            color: #333;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .chart-box { height: 300px; }
+
+        .stats-table-wrap { overflow-x: auto; margin-bottom: 30px; }
+
+        table.compare-stats {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 14px;
+        }
+
+        table.compare-stats th,
+        table.compare-stats td {
+            padding: 6px 12px;
+            border-bottom: 1px solid #eee;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        table.compare-stats th { border-bottom: 2px solid #ddd; }
+        table.compare-stats th:first-child,
+        table.compare-stats td:first-child { text-align: left; }
+
+        .series-head {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #results { display: none; }
+        #emptyNote { color: #666; text-align: center; display: none; }
+    </style>
+</head>
+
+<body data-palette="#2a78d6,#eb6834,#1baf7a,#eda100">
+    <div class="container">
+        <a href="/" class="back-btn">&larr; Back to Folders</a>
+        <h1>Compare Batches</h1>
+        <p style="text-align:center; color:#666; margin-top:-10px;">
+            Overlay the size distributions of two or more synthesis folders.
+            Only folders with saved analysis data ("Add to Folder Analysis") can be compared.
+        </p>
+
+        <div class="picker">
+            <div class="picker-list" id="folderList">Loading folders&hellip;</div>
+            <button class="compare-btn" id="compareBtn" onclick="runComparison()">Compare Selected</button>
+            <span class="hint">Select 2&ndash;4 folders</span>
+        </div>
+
+        <p id="emptyNote"></p>
+
+        <div id="results">
+            <h2>Statistics</h2>
+            <div class="stats-table-wrap">
+                <table class="compare-stats" id="statsTable">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="chart-card">
+                <h3>Length distribution (nm)</h3>
+                <div class="chart-box"><canvas id="lengthChart"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <h3>Width distribution (nm)</h3>
+                <div class="chart-box"><canvas id="widthChart"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <h3>Aspect ratio distribution</h3>
+                <div class="chart-box"><canvas id="arChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Fixed categorical order (validated palette); a folder keeps its color
+        // for the lifetime of a comparison via selection slot.
+        const PALETTE = document.body.dataset.palette.split(',');
+        const MAX_FOLDERS = 4;
+        const charts = {};
+
+        async function loadFolders() {
+            const listEl = document.getElementById('folderList');
+            try {
+                const folders = await (await fetch('/folders')).json();
+                if (!folders.length) {
+                    listEl.textContent = 'No folders yet.';
+                    return;
+                }
+                listEl.innerHTML = '';
+                folders.forEach(name => {
+                    const label = document.createElement('label');
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.value = name;
+                    cb.addEventListener('change', enforceLimit);
+                    const swatch = document.createElement('span');
+                    swatch.className = 'swatch';
+                    swatch.style.background = '#ced4da';
+                    const text = document.createElement('span');
+                    text.textContent = name;
+                    label.appendChild(cb);
+                    label.appendChild(swatch);
+                    label.appendChild(text);
+                    listEl.appendChild(label);
+                });
+            } catch (e) {
+                listEl.textContent = 'Could not load folders.';
+            }
+        }
+
+        function selectedBoxes() {
+            return Array.from(document.querySelectorAll('#folderList input:checked'));
+        }
+
+        function enforceLimit() {
+            const checked = selectedBoxes();
+            document.querySelectorAll('#folderList input').forEach(cb => {
+                cb.disabled = !cb.checked && checked.length >= MAX_FOLDERS;
+            });
+            // Preview each selection's series color in its swatch
+            document.querySelectorAll('#folderList label').forEach(label => {
+                const cb = label.querySelector('input');
+                const swatch = label.querySelector('.swatch');
+                const idx = checked.indexOf(cb);
+                swatch.style.background = idx >= 0 ? PALETTE[idx] : '#ced4da';
+            });
+        }
+
+        async function runComparison() {
+            const names = selectedBoxes().map(cb => cb.value);
+            const note = document.getElementById('emptyNote');
+            note.style.display = 'none';
+            if (names.length < 2) {
+                note.textContent = 'Select at least two folders to compare.';
+                note.style.display = 'block';
+                return;
+            }
+
+            const btn = document.getElementById('compareBtn');
+            btn.disabled = true;
+            try {
+                const series = [];
+                const skipped = [];
+                for (const name of names) {
+                    const agg = await (await fetch(`/folders/${encodeURIComponent(name)}/aggregate`)).json();
+                    if (!agg.data || !agg.data.length) {
+                        skipped.push(name);
+                    } else {
+                        series.push({ name, color: PALETTE[series.length], agg });
+                    }
+                }
+                if (skipped.length) {
+                    note.textContent = `Skipped (no saved analysis data): ${skipped.join(', ')}`;
+                    note.style.display = 'block';
+                }
+                if (series.length < 2) {
+                    note.textContent = (note.textContent ? note.textContent + ' — ' : '') +
+                        'Fewer than two folders have saved analysis data; nothing to compare.';
+                    note.style.display = 'block';
+                    document.getElementById('results').style.display = 'none';
+                    return;
+                }
+
+                renderStatsTable(series);
+                renderHistogram('lengthChart', series, 'length_nm');
+                renderHistogram('widthChart', series, 'width_nm');
+                renderHistogram('arChart', series, 'aspect_ratio');
+                document.getElementById('results').style.display = 'block';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function renderStatsTable(series) {
+            const thead = document.querySelector('#statsTable thead');
+            const tbody = document.querySelector('#statsTable tbody');
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+
+            const headRow = document.createElement('tr');
+            headRow.appendChild(document.createElement('th')); // metric column
+            series.forEach(s => {
+                const th = document.createElement('th');
+                const wrap = document.createElement('span');
+                wrap.className = 'series-head';
+                const sw = document.createElement('span');
+                sw.className = 'swatch';
+                sw.style.background = s.color;
+                const txt = document.createElement('span');
+                txt.textContent = s.name;
+                wrap.appendChild(sw);
+                wrap.appendChild(txt);
+                th.appendChild(wrap);
+                headRow.appendChild(th);
+            });
+            thead.appendChild(headRow);
+
+            // Row order comes from the first folder's extended stats
+            const metrics = (series[0].agg.extended_stats || []).map(r => r.Metric);
+            metrics.forEach(metric => {
+                const tr = document.createElement('tr');
+                const tdName = document.createElement('td');
+                tdName.textContent = metric;
+                tr.appendChild(tdName);
+                series.forEach(s => {
+                    const td = document.createElement('td');
+                    const row = (s.agg.extended_stats || []).find(r => r.Metric === metric);
+                    td.textContent = row ? row.Value : '-';
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderHistogram(canvasId, series, field) {
+            const allVals = series.flatMap(s => s.agg.data.map(d => d[field]))
+                                  .filter(v => Number.isFinite(v));
+            if (!allVals.length) return;
+
+            const min = Math.min(...allVals);
+            const max = Math.max(...allVals);
+            const binCount = 20;
+            const width = (max - min) / binCount || 1;
+
+            const labels = [];
+            for (let i = 0; i < binCount; i++) {
+                labels.push((min + (i + 0.5) * width).toFixed(1));
+            }
+
+            // Frequency polygons in % of each folder's particles, on shared bins
+            const datasets = series.map(s => {
+                const counts = new Array(binCount).fill(0);
+                const vals = s.agg.data.map(d => d[field]).filter(v => Number.isFinite(v));
+                vals.forEach(v => {
+                    let idx = Math.floor((v - min) / width);
+                    if (idx >= binCount) idx = binCount - 1;
+                    if (idx < 0) idx = 0;
+                    counts[idx]++;
+                });
+                const pct = counts.map(c => vals.length ? (c / vals.length) * 100 : 0);
+                return {
+                    label: `${s.name} (n=${vals.length})`,
+                    data: pct,
+                    borderColor: s.color,
+                    backgroundColor: s.color + '22',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHitRadius: 12,
+                    fill: true,
+                    tension: 0.3
+                };
+            });
+
+            if (charts[canvasId]) charts[canvasId].destroy();
+            charts[canvasId] = new Chart(document.getElementById(canvasId), {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 9 } },
+                        tooltip: {
+                            callbacks: {
+                                title: items => `~${items[0].label} ${field === 'aspect_ratio' ? '' : 'nm'}`,
+                                label: item => `${item.dataset.label}: ${item.parsed.y.toFixed(1)}% of particles`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            title: { display: true, text: field === 'aspect_ratio' ? 'Aspect ratio (bin center)' : 'Size (nm, bin center)', color: '#666' },
+                            ticks: { maxTicksLimit: 11, color: '#666' }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: '#f1f3f5' },
+                            title: { display: true, text: '% of particles', color: '#666' },
+                            ticks: { color: '#666' }
+                        }
+                    }
+                }
+            });
+        }
+
+        loadFolders();
+    </script>
+</body>
+
+</html>

@@ -432,6 +432,111 @@ def dilmarkers(markers, original_shape):
     return dilated_markers, bg_image # returning image as overlay placeholder
 
 
+def split_clump_intensity(gray_crop, crop_bool, min_marker_area, expected_width_px=None):
+    """Split fused SIDE-BY-SIDE rods using brightness seams in the raw image.
+
+    Parallel rods touching along their full length merge into one solid blob in
+    the binary mask. The distance transform of that blob has no "neck", so the
+    standard ``split_clump`` watershed sees a single object. In the raw TEM
+    image, however, the contact line between adjacent rods is a slightly
+    LIGHTER seam than the dark rod cores. This routine re-thresholds the clump
+    interior at a darker cutoff so those seams drop out, leaving one connected
+    "core" per rod; the cores then seed a watershed over the smoothed intensity
+    that assigns every clump pixel to its rod.
+
+    Args:
+        gray_crop: 2-D uint8 crop of the ORIGINAL grayscale image (rods dark).
+        crop_bool: matching 2-D boolean mask of the clump.
+        min_marker_area: minimum area (px) for final fragments.
+        expected_width_px: estimated single-rod width; used to size the core
+            filter so texture specks never become seeds.
+
+    Returns:
+        List of >= 2 boolean masks if a split was found, else None (caller
+        should fall back to the distance-transform splitter).
+    """
+    crop_bool = np.ascontiguousarray(crop_bool, dtype=bool)
+    if not crop_bool.any() or gray_crop.shape != crop_bool.shape or gray_crop.ndim != 2:
+        return None
+
+    vals = gray_crop[crop_bool]
+    if vals.size < 4 * min_marker_area:
+        return None
+
+    smooth = ndi.gaussian_filter(gray_crop.astype(np.float32), 2.0)
+
+    # A rod core (dark, elongated) is far larger than noise/texture blobs.
+    if expected_width_px and expected_width_px > 4:
+        core_floor = max(min_marker_area, int(0.5 * expected_width_px ** 2))
+    else:
+        core_floor = max(min_marker_area, 100)
+
+    # Sweep a few cutoffs; keep the one that resolves the most rod-sized cores.
+    best_markers, best_count = None, 0
+    for pct in (45, 55, 65):
+        t = np.percentile(vals, pct)
+        cores = (smooth < t) & crop_bool
+        cores = morphology.binary_opening(cores, morphology.disk(3))
+        lab, n = ndi.label(cores)
+        if n == 0:
+            continue
+        sizes = ndi.sum(cores, lab, index=np.arange(1, n + 1))
+        kept_ids = np.flatnonzero(np.asarray(sizes) >= core_floor) + 1
+        if len(kept_ids) > best_count:
+            remap = np.zeros(n + 1, dtype=np.int32)
+            remap[kept_ids] = np.arange(1, len(kept_ids) + 1)
+            best_markers, best_count = remap[lab], len(kept_ids)
+
+    if best_count < 2:
+        return None
+
+    # Outside the mask counts as maximally bright so basins never leak out.
+    inside = np.where(crop_bool, smooth, 255.0)
+    ws = watershed(inside, best_markers, mask=crop_bool)
+
+    masks = []
+    for label_idx in range(1, best_count + 1):
+        mask = ws == label_idx
+        if int(mask.sum()) >= min_marker_area:
+            masks.append(mask)
+
+    return masks if len(masks) >= 2 else None
+
+
+def _mask_short_side(mask):
+    cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return 0.0
+    (_, (rw, rh), _) = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+    return float(min(rw, rh))
+
+
+def split_raft(gray_crop, crop_bool, min_marker_area, expected_width_px, depth=0):
+    """Recursively split a raft of side-by-side rods via intensity seams.
+
+    The first pass thresholds with the WHOLE clump's intensity statistics, so
+    rods much lighter than their neighbours may not seed a core and stay fused
+    with a neighbour. Each still-too-wide child is therefore re-split using its
+    own local statistics (recursion adapts the threshold to the lighter rods).
+
+    Returns a flat list of masks (may be [crop_bool] when nothing splits).
+    """
+    children = split_clump_intensity(gray_crop, crop_bool, min_marker_area,
+                                     expected_width_px=expected_width_px)
+    if not children:
+        return [crop_bool]
+
+    result = []
+    for child in children:
+        if (depth < 2 and expected_width_px
+                and _mask_short_side(child) >= 1.6 * expected_width_px):
+            result.extend(split_raft(gray_crop, child, min_marker_area,
+                                     expected_width_px, depth + 1))
+        else:
+            result.append(child)
+    return result
+
+
 def split_clump(crop_bool, min_marker_area, separation_strength=0):
     """
     Split a fused / low-solidity binary region into individual convex particles

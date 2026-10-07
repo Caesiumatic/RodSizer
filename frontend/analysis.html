@@ -9,6 +9,10 @@
     <link rel="icon" type="image/png" href="/static/assets/loading_screen.png">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- jsPDF + autotable: the single-image PDF report is laid out directly
+         (real text, tables that break across pages with repeated headers). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -444,6 +448,25 @@
             border-color: #0056b3;
         }
 
+        /* Area zoom: stacked under the hover-Zoom button */
+        .zoom-area-btn { top: 46px; }
+        .zoom-reset-btn { top: 82px; }
+
+        #zoomSelectBox {
+            position: absolute;
+            display: none;
+            border: 2px dashed #0a40ff;
+            background: rgba(10, 64, 255, 0.12);
+            pointer-events: none;
+            z-index: 25;
+        }
+
+        /* Keep the overlays moving in lock-step with the image when zooming */
+        #particleOverlayCanvas,
+        #scaleCanvas {
+            transition: transform 0.1s ease-out;
+        }
+
         .label-toggle-btn {
             position: absolute;
             top: 10px;
@@ -481,6 +504,11 @@
         .image-wrapper {
             position: relative;
             overflow: hidden;
+            /* 'clip' (unlike 'hidden') can't be scrolled at all. A zoomed image
+               is far larger than the panel, and a drag could otherwise scroll
+               the panel sideways, pushing buttons off-screen and the zoom
+               off-centre. 'hidden' above is the fallback for older browsers. */
+            overflow: clip;
             width: 100%;
             flex: 1;
             min-height: 0;
@@ -570,6 +598,80 @@
             cursor: crosshair;
             z-index: 20;
         }
+
+        /* Tile review toolbar (under the image) */
+        .tile-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            font-size: 13px;
+            color: #444;
+        }
+        .tile-toolbar #tileSetup,
+        .tile-toolbar #tileNav {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .tile-toolbar .tile-label { font-weight: 600; }
+        .tile-toolbar button,
+        .tile-toolbar select {
+            padding: 4px 10px;
+            font-size: 13px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+        }
+        .tile-toolbar button:disabled { opacity: 0.4; cursor: default; }
+        .tile-minimap {
+            display: inline-grid;
+            gap: 2px;
+            vertical-align: middle;
+        }
+        .tile-minimap .tile-cell {
+            width: 12px;
+            height: 12px;
+            background: #dee2e6;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        .tile-minimap .tile-cell.visited { background: #28a745; }
+        .tile-minimap .tile-cell.current { background: #007bff; outline: 2px solid #004a99; }
+
+        /* "Showing X of Y rods in view" banner above the ledger */
+        .ledger-view-banner {
+            background: #e7f1ff;
+            border: 1px solid #b6d4fe;
+            color: #084298;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin: 0 0 8px 0;
+        }
+        .ledger-view-banner button {
+            border: none;
+            background: none;
+            color: #0a58ca;
+            text-decoration: underline;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 0;
+            margin-left: 6px;
+        }
+
+        /* Image-panel buttons stay above the particle overlay (15), the scale
+           canvas (20) and the zoom selection box (25), so zoomed-in box
+           outlines never draw over them. */
+        .zoom-btn,
+        .image-toggle-btn,
+        .label-toggle-btn {
+            z-index: 30;
+        }
     </style>
 </head>
 
@@ -591,7 +693,7 @@
                 <div class="modal-body">
                     <p><strong>1. Review the image:</strong> the centre panel shows detected particles as boxes.
                         Toggle <em>Show Binary Mask</em> to inspect segmentation, <em>Zoom</em> to look closer, and
-                        <em>Show IDs</em> to label particles (hidden by default so they don't cover small rods).</p>
+                        <em>Hide IDs</em> to unclutter the view; ID colors cycle by decade (0s yellow, 10s magenta, 20s green, 30s cyan, 40s red, ...).</p>
                     <p><strong>2. Check the scale:</strong> the calibration source is shown at the top right. If it is
                         wrong or uncalibrated, click <em>Re-scale</em> and draw a line along the scale bar, or use the
                         <em>Mask</em> slider to fine-tune how aggressively touching particles are separated.</p>
@@ -638,15 +740,42 @@
             </p>
             <div class="image-container" style="position: relative; flex: 1; overflow: auto;">
                 <div class="image-wrapper" id="zoomWrapper">
-                    <button class="label-toggle-btn active" onclick="toggleLabels()" id="labelToggleBtn">Show IDs</button>
+                    <button class="label-toggle-btn" onclick="toggleLabels()" id="labelToggleBtn">Hide IDs</button>
                     <button class="image-toggle-btn" onclick="toggleImageView()" id="imageToggleBtn">Show Binary Mask</button>
                     <button class="zoom-btn" onclick="toggleZoom()" id="zoomToggle">
                         <span style="font-size: 16px;">🔍</span> Zoom
                     </button>
+                    <button class="zoom-btn zoom-area-btn" onclick="startRegionSelect()" id="zoomAreaBtn"
+                        title="Drag a box over part of the image to zoom into it; stays zoomed until you reset">
+                        <span style="font-size: 15px;">⬚</span> Zoom to area
+                    </button>
+                    <button class="zoom-btn zoom-reset-btn" onclick="resetRegionZoom()" id="zoomResetBtn" style="display: none;">
+                        <span style="font-size: 15px;">↺</span> Reset zoom
+                    </button>
+                    <div id="zoomSelectBox"></div>
                     <canvas id="particleOverlayCanvas"></canvas>
                     <canvas id="scaleCanvas" style="display: none;"></canvas>
                     <img id="processedImage" src="" alt="Detected Particles">
                 </div>
+            </div>
+            <div class="tile-toolbar" id="tileToolbar">
+                <span class="tile-label">▦ Review in tiles</span>
+                <span id="tileSetup">
+                    <select id="tileGridSelect" title="Grid size">
+                        <option value="2">2×2</option>
+                        <option value="3" selected>3×3</option>
+                        <option value="4">4×4</option>
+                    </select>
+                    <button type="button" id="tileStartBtn" onclick="startTileReview()"
+                        title="Step through the image tile by tile; every rod belongs to exactly one tile">Start</button>
+                </span>
+                <span id="tileNav" style="display: none;">
+                    <button type="button" id="tilePrevBtn" onclick="stepTile(-1)" title="Previous tile (← key)">◀ Prev</button>
+                    <span id="tileCounter"></span>
+                    <button type="button" id="tileNextBtn" onclick="stepTile(1)" title="Next tile (→ key)">Next ▶</button>
+                    <span id="tileMiniMap" class="tile-minimap" title="Click a square to jump to that tile. Green = viewed."></span>
+                    <button type="button" onclick="exitTileReview()" title="Back to the full image (Esc)">Exit tiles</button>
+                </span>
             </div>
         </div>
 
@@ -668,9 +797,27 @@
             <div id="calibrationPanel" class="calibration-panel" style="display: none;">
                 <h4 id="calibrationPanelTitle">Scale Calibration</h4>
                 <p id="calibrationPanelNote" style="margin: 0 0 8px 0; color: #6b5a00;">You can recalibrate this image at any time.</p>
+                <div id="useAutoCalRow" style="display: none; margin-bottom: 8px;">
+                    <button class="cal-secondary" onclick="useAutomaticCalibration()">Use automatic calibration (.dm3 / metadata)</button>
+                    <span id="autoCalStatus" style="margin-left: 6px; color: #888;"></span>
+                </div>
                 <div class="cal-option">
-                    <label>Manual</label>
-                    <p style="margin: 4px 0; color: #555;">Draw a line along the scale bar in the image, then enter its length.</p>
+                    <label>Pixel size (from image)</label>
+                    <p style="margin: 4px 0; color: #555;">If the image states a pixel size (e.g. "250.3 pm"), enter it directly — no line needed.</p>
+                    <div style="margin-top: 6px;">
+                        <input type="number" id="pixelSizeInput" placeholder="e.g. 250.3" min="0" step="any" style="width: 110px;">
+                        <select id="pixelSizeUnitSelect" style="padding: 4px;">
+                            <option value="pm" selected>pm/px</option>
+                            <option value="angstrom">Å/px</option>
+                            <option value="nm">nm/px</option>
+                        </select>
+                        <button onclick="applyPixelSize()" style="margin-left: 4px;">Set Pixel Size</button>
+                        <span id="pixelSizeStatus" style="margin-left: 6px; color: #888;"></span>
+                    </div>
+                </div>
+                <div class="cal-option">
+                    <label>Scale bar</label>
+                    <p style="margin: 4px 0; color: #555;">Or draw a line along the scale bar in the image, then enter its length.</p>
                     <button id="drawLineBtn" onclick="startDrawLine()">Draw Line on Image</button>
                     <span id="lineStatus" style="margin-left: 6px; color: #888;"></span>
                     <div style="margin-top: 6px;">
@@ -687,6 +834,7 @@
                     title="Deselect particles whose length, width or aspect ratio are statistical outliers (Tukey 1.5×IQR) among the currently selected set">Deselect outliers</button>
                 <span id="outlierStatus" style="font-size: 11px; color: #6c757d;"></span>
             </div>
+            <div id="ledgerViewBanner" class="ledger-view-banner" style="display: none;"></div>
             <div class="scrollable-table">
                 <table id="dataTable">
                     <thead>
@@ -757,11 +905,12 @@
         <div style="text-align: center; margin-top: 20px; display: flex; gap: 10px; justify-content: center;">
             <a id="downloadExcel" href="#" class="btn" style="width: auto; padding: 12px 40px;">Download Excel
                 Report</a>
-            <button onclick="downloadPDF()" class="btn"
+            <button onclick="downloadPDF()" class="btn" id="downloadPdfBtn"
                 style="width: auto; padding: 12px 40px; background-color: #6c757d;">Download PDF Report</button>
             <button id="addToFolderBtn" onclick="addToFolderAnalysis()" class="btn"
-                style="width: auto; padding: 12px 40px; background-color: #28a745; display: none;">Add to Folder
+                style="width: auto; min-width: 280px; padding: 12px 40px; background-color: #28a745; display: none;">Add to Folder
                 Analysis</button>
+            <div id="addToFolderStatus" style="display: none; margin-top: 8px; font-size: 14px;"></div>
         </div>
     </div>
 
@@ -806,12 +955,17 @@
                     manualPixelSize = null,
                     requestedBarLengthNm = null,
                     forceReprocess = false,
-                    binaryMaskTune = appliedBinaryMaskTune
+                    binaryMaskTune = appliedBinaryMaskTune,
+                    useAutomaticCalibration = false
                 } = options;
 
-                const resolvedManualPixelSize = manualPixelSize !== null && manualPixelSize !== undefined
-                    ? manualPixelSize
-                    : getActiveManualPixelSize();
+                // useAutomaticCalibration drops a sticky manual override so the
+                // backend falls back to .dm3 / metadata / footer calibration.
+                const resolvedManualPixelSize = useAutomaticCalibration
+                    ? null
+                    : (manualPixelSize !== null && manualPixelSize !== undefined
+                        ? manualPixelSize
+                        : getActiveManualPixelSize());
 
                 let url = `/process/${imageId}`;
                 const params = new URLSearchParams();
@@ -935,7 +1089,7 @@
             maskControls.classList.toggle('visible', isBinary);
             image.onload = () => {
                 syncParticleOverlayToImage();
-                renderParticleOverlay();
+                applyRegionZoom();   // keeps an active area zoom; renders the overlay
             };
             image.src = `${nextUrl}?t=${timestamp}`;
         }
@@ -1184,7 +1338,7 @@
             });
 
             updateSortIndicators();
-            syncSelectAllState();
+            updateLedgerFilter();   // hide rows outside the zoomed view / tile; syncs select-all
         }
 
         function sortBy(key) {
@@ -1212,10 +1366,11 @@
         }
 
         function syncSelectAllState() {
+            // Reflects only the rows currently shown (zoomed view / tile).
             const selectAll = document.getElementById('selectAll');
-            const all = document.querySelectorAll('.rod-checkbox');
-            if (!selectAll || !all.length) return;
-            selectAll.checked = Array.from(all).every(cb => cb.checked);
+            const shown = visibleLedgerRows().map(tr => tr.querySelector('.rod-checkbox')).filter(Boolean);
+            if (selectAll && shown.length) selectAll.checked = shown.every(cb => cb.checked);
+            updateLedgerBanner();
         }
 
         // --- Bulk selection (above / below a row, in current display order) ----
@@ -1223,7 +1378,8 @@
         // row itself, so e.g. sort by Area ↓ then "Deselect this & above" clears a
         // whole block of clumps in one click. IDs are never touched.
         function applyBulkSelection(anchorIndex, direction, checked) {
-            const rows = Array.from(document.querySelectorAll('#dataTable tbody tr'));
+            // Only rows currently shown (zoomed view / tile) are affected.
+            const rows = visibleLedgerRows();
             const anchorPos = rows.findIndex(tr => {
                 const cb = tr.querySelector('.rod-checkbox');
                 return cb && cb.dataset.index === String(anchorIndex);
@@ -1289,10 +1445,11 @@
         })();
 
         function toggleAll(source) {
-            const checkboxes = document.querySelectorAll('.rod-checkbox');
-            for (let i = 0; i < checkboxes.length; i++) {
-                checkboxes[i].checked = source.checked;
-            }
+            // Only rows currently shown (zoomed view / tile) are affected.
+            visibleLedgerRows().forEach(tr => {
+                const cb = tr.querySelector('.rod-checkbox');
+                if (cb) cb.checked = source.checked;
+            });
             renderParticleOverlay();
             syncSelectAllState();
         }
@@ -1391,10 +1548,12 @@
                 const meanWidth = widths.reduce((a, b) => a + b, 0) / count;
                 const meanAR = ars.reduce((a, b) => a + b, 0) / count;
 
-                // Std Dev
-                const stdLength = Math.sqrt(lengths.map(x => Math.pow(x - meanLength, 2)).reduce((a, b) => a + b, 0) / count);
-                const stdWidth = Math.sqrt(widths.map(x => Math.pow(x - meanWidth, 2)).reduce((a, b) => a + b, 0) / count);
-                const stdAR = Math.sqrt(ars.map(x => Math.pow(x - meanAR, 2)).reduce((a, b) => a + b, 0) / count);
+                // Sample standard deviation (n − 1), matching the Excel export,
+                // folder analysis and PDF report.
+                const sdDen = Math.max(1, count - 1);
+                const stdLength = Math.sqrt(lengths.map(x => Math.pow(x - meanLength, 2)).reduce((a, b) => a + b, 0) / sdDen);
+                const stdWidth = Math.sqrt(widths.map(x => Math.pow(x - meanWidth, 2)).reduce((a, b) => a + b, 0) / sdDen);
+                const stdAR = Math.sqrt(ars.map(x => Math.pow(x - meanAR, 2)).reduce((a, b) => a + b, 0) / sdDen);
 
                 document.getElementById('count').textContent = count;
                 document.getElementById('meanLength').textContent = meanLength.toFixed(1) + ' ± ' + stdLength.toFixed(1);
@@ -1562,7 +1721,7 @@
         // Show/hide the ID numbers drawn over the image (they can obscure small
         // particles). Hidden by default; drawn on the canvas overlay so the
         // toggle is instant.
-        let showLabels = false;
+        let showLabels = true;
         function toggleLabels() {
             showLabels = !showLabels;
             const btn = document.getElementById('labelToggleBtn');
@@ -1598,6 +1757,19 @@
             }
         }
 
+        // ID label colour by decade (0s yellow, 10s magenta, 20s green, 30s cyan,
+        // 40s red, ...), shared by the on-screen overlay and the report images.
+        const ID_DECADE_COLORS = [
+            '#ffee00',  //  0-9   yellow
+            '#ff35ff',  // 10-19  magenta
+            '#35e635',  // 20-29  green
+            '#00e5ff',  // 30-39  cyan
+            '#ff3b30',  // 40-49  red
+            '#ff9500',  // 50-59  orange
+            '#ffb6c9',  // 60-69  pink
+            '#00ff9d',  // 70-79  spring green
+        ];
+
         function pathParticle(ctx, corners) {
             ctx.beginPath();
             ctx.moveTo(corners[0].x, corners[0].y);
@@ -1614,14 +1786,23 @@
 
             // The canvas is at full image resolution but shown scaled down, so
             // size strokes relative to that ratio to keep them visible.
+            // Dividing by the area-zoom factor keeps outlines and ID numbers the
+            // same size ON SCREEN when zoomed in, so the rods grow but the labels
+            // don't — the whole point of zooming into dense, tiny rods.
             const img = document.getElementById('processedImage');
-            const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / img.clientWidth) : 1;
-            const baseLine = Math.max(1, scale * 0.7);   // thin outlines, vivid colour
+            const zk = (regionZoomK || 1) * (hoverMagnifying ? HOVER_MAG : 1);
+            const scale = (img && img.clientWidth) ? (particleOverlayCanvas.width / (img.clientWidth * zk)) : 1;
+            const baseLine = Math.max(2 / zk, scale * 1.6);   // clearly visible outlines
             const now = performance.now();
+            // In tile review, rods whose centre lies outside the current tile
+            // belong to a neighbouring tile: draw them faded.
+            const tileCell = tileMode ? tileCellRect(tileMode.n, tileMode.index) : null;
+            const alphaFor = rod => (tileCell && !rodInRect(rod, tileCell)) ? 0.3 : 1;
 
             currentData.forEach((rod, index) => {
                 const isSelected = getCheckboxStateByIndex(index);
                 const corners = getParticleBoxPoints(rod);
+                ctx.globalAlpha = alphaFor(rod);
 
                 pathParticle(ctx, corners);
 
@@ -1656,26 +1837,41 @@
                     ctx.restore();
                 }
             });
+            ctx.globalAlpha = 1;
+
+            // Tile boundary: which rods this tile is responsible for.
+            if (tileCell) {
+                ctx.save();
+                ctx.setLineDash([scale * 8, scale * 6]);
+                ctx.lineWidth = Math.max(2 / zk, scale * 2);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+                ctx.strokeRect(tileCell.x, tileCell.y, tileCell.w, tileCell.h);
+                ctx.restore();
+            }
 
             // ID numbers, drawn last (on top of all boxes) and only when enabled.
-            // Outlined white text instead of a filled pill so they obscure the
-            // particle underneath as little as possible.
+            // Color cycles by decade (0s yellow, 10s magenta, 20s green, 30s
+            // cyan, 40s red, ...) so e.g. "34" is found at a glance among the
+            // cyan numbers. Black outline keeps every hue readable.
             if (showLabels) {
-                const fontPx = Math.max(13 * scale, 11);
+                const decadeColors = ID_DECADE_COLORS;
+                const fontPx = Math.max(13 * scale, 11 / zk);
                 ctx.font = `bold ${fontPx}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.lineWidth = Math.max(1, scale * 0.9);
+                ctx.lineWidth = Math.max(1.5 / zk, scale * 1.1);
                 ctx.lineJoin = 'round';
                 currentData.forEach((rod) => {
                     const label = String(rod.id ?? '');
                     if (!label) return;
                     const x = rod.centroid_x, y = rod.centroid_y;
-                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+                    ctx.globalAlpha = alphaFor(rod);
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
                     ctx.strokeText(label, x, y);
-                    ctx.fillStyle = '#ffffff';
+                    ctx.fillStyle = decadeColors[Math.floor((rod.id ?? 0) / 10) % decadeColors.length];
                     ctx.fillText(label, x, y);
                 });
+                ctx.globalAlpha = 1;
                 ctx.textAlign = 'start';
                 ctx.textBaseline = 'alphabetic';
             }
@@ -1689,16 +1885,23 @@
             });
         }
 
+        // The hover magnifier stacks ON TOP of the current view (area zoom or
+        // tile), magnifying HOVER_MAG× around the cursor; leaving the image
+        // returns to that view. It never exits tile review or resets a zoom.
+        const HOVER_MAG = 2.5;
+        let hoverMagnifying = false;   // magnifier engaged (cursor over the image)
+
         function toggleZoom() {
             isZoomActive = !isZoomActive;
             if (isZoomActive) {
+                if (isSelectingZoom) cancelRegionSelect();
                 zoomToggle.classList.add('active');
                 zoomWrapper.style.cursor = 'zoom-in';
             } else {
                 zoomToggle.classList.remove('active');
                 zoomWrapper.style.cursor = 'default';
-                // Reset
-                setImageTransform('50% 50%', 'scale(1)');
+                hoverMagnifying = false;
+                applyRegionZoom();   // back to the area-zoom / tile view (or full image)
             }
         }
 
@@ -1706,20 +1909,364 @@
             if (!isZoomActive) return;
 
             const rect = zoomWrapper.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
+            const cx = e.clientX - rect.left;    // cursor in panel coordinates
+            const cy = e.clientY - rect.top;
 
-            // Calculate percentage
-            const xPercent = (x / rect.width) * 100;
-            const yPercent = (y / rect.height) * 100;
+            // Current base view: area zoom / tile geometry, or the plain fitted image.
+            const g = (zoomRegion && lastZoomGeom) ? lastZoomGeom : { k: 1, tx: 0, ty: 0 };
+            const ox = processedImage.offsetLeft, oy = processedImage.offsetTop;
+            // Magnify the base view by HOVER_MAG about the cursor:
+            // screen = cursor + m * (base_screen - cursor)
+            const m = HOVER_MAG;
+            const k = g.k * m;
+            const tx = m * g.tx + (m - 1) * (ox - cx);
+            const ty = m * g.ty + (m - 1) * (oy - cy);
+            setImageTransform('0 0', `translate(${tx}px, ${ty}px) scale(${k})`);
 
-            setImageTransform(`${xPercent}% ${yPercent}%`, 'scale(2.5)');
+            if (!hoverMagnifying) {
+                hoverMagnifying = true;
+                renderParticleOverlay();   // redraw labels/outlines for the magnified size
+            }
         });
 
         zoomWrapper.addEventListener('mouseleave', function () {
             if (!isZoomActive) return;
-            setImageTransform('50% 50%', 'scale(1)');
+            hoverMagnifying = false;
+            applyRegionZoom();   // restore the area-zoom / tile view (or full image)
         });
+
+        // --- Area zoom: drag a box, view stays zoomed until reset ---
+        // zoomRegion is stored in natural image pixels so it survives window
+        // resizes and image reloads; the CSS transform is recomputed from it.
+        let zoomRegion = null;        // {x, y, w, h} in natural pixels, or null
+        let regionZoomK = 1;          // current zoom factor relative to the fitted view
+        let isSelectingZoom = false;
+        let zoomDragStart = null;     // {x, y} client coords
+        let suppressNextImageClick = false;
+        const zoomSelectBox = document.getElementById('zoomSelectBox');
+        const zoomAreaBtn = document.getElementById('zoomAreaBtn');
+        const zoomResetBtn = document.getElementById('zoomResetBtn');
+        const imagePanelHint = document.getElementById('imagePanelHint');
+        const DEFAULT_HINT = imagePanelHint.textContent.trim();
+
+        function updateZoomHint() {
+            if (isSelectingZoom) {
+                imagePanelHint.textContent = 'Drag a box over the area to zoom into (Esc to cancel)';
+            } else if (tileMode) {
+                const total = tileMode.n * tileMode.n;
+                imagePanelHint.textContent = tileZoomedDeeper
+                    ? `Tile ${tileMode.index + 1} of ${total}, zoomed ${regionZoomK.toFixed(1)}× · Esc or "Reset zoom" to see the whole tile`
+                    : `Tile ${tileMode.index + 1} of ${total} — click rods to deselect · ← → change tile · faded rods belong to neighbouring tiles`;
+            } else if (zoomRegion) {
+                imagePanelHint.textContent = `Zoomed ${regionZoomK.toFixed(1)}× — click particles to deselect · Esc or "Reset zoom" to return`;
+            } else {
+                imagePanelHint.textContent = DEFAULT_HINT;
+            }
+        }
+
+        function applyRegionZoom() {
+            const img = processedImage;
+            // Always shows the base view; the hover magnifier (if on) re-engages
+            // on the next mouse movement, on top of this view.
+            hoverMagnifying = false;
+            if (!zoomRegion || !img.naturalWidth || !img.clientWidth) {
+                regionZoomK = 1;
+                lastZoomGeom = null;
+                setImageTransform('0 0', 'none');
+                zoomResetBtn.style.display = 'none';
+                updateZoomHint();
+                renderParticleOverlay();
+                updateLedgerFilter();
+                return;
+            }
+            // Base (unzoomed) display scale: CSS px per natural image pixel.
+            const s = img.clientWidth / img.naturalWidth;
+            const W = zoomWrapper.clientWidth, H = zoomWrapper.clientHeight;
+            const rw = zoomRegion.w * s, rh = zoomRegion.h * s;
+            const cx = (zoomRegion.x + zoomRegion.w / 2) * s;
+            const cy = (zoomRegion.y + zoomRegion.h / 2) * s;
+            // Fit the selected box to the panel; cap so one image pixel is at
+            // most ~8 screen pixels (beyond that there is nothing more to see).
+            const kMax = Math.max(1, 8 / s);
+            const k = Math.min(kMax, Math.max(1, 0.98 * Math.min(W / rw, H / rh)));
+            const tx = W / 2 - img.offsetLeft - k * cx;
+            const ty = H / 2 - img.offsetTop - k * cy;
+            regionZoomK = k;
+            // Remember the geometry so the ledger can compute exactly what is on
+            // screen (computed, not measured: the transform animates for 0.1 s).
+            lastZoomGeom = { k, tx, ty, s, ox: img.offsetLeft, oy: img.offsetTop, W, H };
+            setImageTransform('0 0', `translate(${tx}px, ${ty}px) scale(${k})`);
+            // In tile review, "Reset zoom" only matters after zooming deeper
+            // into a tile (it then returns to the whole tile).
+            zoomResetBtn.style.display = (!tileMode || tileZoomedDeeper) ? 'flex' : 'none';
+            updateZoomHint();
+            renderParticleOverlay();
+            updateLedgerFilter();
+        }
+
+        function startRegionSelect() {
+            if (isSelectingZoom) { cancelRegionSelect(); return; }
+            if (isZoomActive) toggleZoom();          // the two zoom modes are exclusive
+            if (isDrawingLine) return;              // don't fight the scale-line tool
+            isSelectingZoom = true;
+            zoomAreaBtn.classList.add('active');
+            zoomWrapper.style.cursor = 'crosshair';
+            updateZoomHint();
+        }
+
+        function cancelRegionSelect() {
+            isSelectingZoom = false;
+            zoomDragStart = null;
+            zoomSelectBox.style.display = 'none';
+            zoomAreaBtn.classList.remove('active');
+            zoomWrapper.style.cursor = 'default';
+            updateZoomHint();
+        }
+
+        function resetRegionZoom() {
+            // Inside tile review, "reset" means back to the whole current tile.
+            tileZoomedDeeper = false;
+            zoomRegion = tileMode ? tileViewRegion(tileCellRect(tileMode.n, tileMode.index)) : null;
+            applyRegionZoom();
+        }
+
+        function clientToNatural(clientX, clientY) {
+            // getBoundingClientRect reflects the current transform, so this
+            // works at any zoom level (zooming again from a zoomed view).
+            const r = processedImage.getBoundingClientRect();
+            const nx = (clientX - r.left) * processedImage.naturalWidth / r.width;
+            const ny = (clientY - r.top) * processedImage.naturalHeight / r.height;
+            return {
+                x: Math.min(processedImage.naturalWidth, Math.max(0, nx)),
+                y: Math.min(processedImage.naturalHeight, Math.max(0, ny))
+            };
+        }
+
+        zoomWrapper.addEventListener('mousedown', function (e) {
+            if (!isSelectingZoom || e.button !== 0) return;
+            if (e.target.closest('button')) return;
+            e.preventDefault();                       // no image ghost-drag / text selection
+            zoomDragStart = { x: e.clientX, y: e.clientY };
+            drawZoomSelectBox(e.clientX, e.clientY);
+            zoomSelectBox.style.display = 'block';
+        });
+
+        function drawZoomSelectBox(clientX, clientY) {
+            const wr = zoomWrapper.getBoundingClientRect();
+            const left = Math.min(zoomDragStart.x, clientX) - wr.left;
+            const top = Math.min(zoomDragStart.y, clientY) - wr.top;
+            zoomSelectBox.style.left = `${left}px`;
+            zoomSelectBox.style.top = `${top}px`;
+            zoomSelectBox.style.width = `${Math.abs(clientX - zoomDragStart.x)}px`;
+            zoomSelectBox.style.height = `${Math.abs(clientY - zoomDragStart.y)}px`;
+        }
+
+        window.addEventListener('mousemove', function (e) {
+            if (!isSelectingZoom || !zoomDragStart) return;
+            drawZoomSelectBox(e.clientX, e.clientY);
+        });
+
+        window.addEventListener('mouseup', function (e) {
+            if (!isSelectingZoom || !zoomDragStart) return;
+            const dragW = Math.abs(e.clientX - zoomDragStart.x);
+            const dragH = Math.abs(e.clientY - zoomDragStart.y);
+            // The click that ends a drag must not also toggle a particle.
+            suppressNextImageClick = true;
+            setTimeout(() => { suppressNextImageClick = false; }, 0);
+            if (dragW < 8 || dragH < 8) {             // too small: keep waiting for a real box
+                zoomDragStart = null;
+                zoomSelectBox.style.display = 'none';
+                return;
+            }
+            const a = clientToNatural(zoomDragStart.x, zoomDragStart.y);
+            const b = clientToNatural(e.clientX, e.clientY);
+            const region = {
+                x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+                w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y)
+            };
+            cancelRegionSelect();
+            if (region.w >= 4 && region.h >= 4) {
+                if (tileMode) tileZoomedDeeper = true;   // a closer look inside the tile
+                ledgerShowAll = false;
+                zoomRegion = region;
+                applyRegionZoom();
+            }
+        });
+
+        // Fallback for browsers without overflow:clip — the zoom math assumes
+        // the panel is never scrolled, so undo any scroll the browser applies.
+        zoomWrapper.addEventListener('scroll', function () {
+            if (zoomWrapper.scrollLeft || zoomWrapper.scrollTop) {
+                zoomWrapper.scrollLeft = 0;
+                zoomWrapper.scrollTop = 0;
+            }
+        });
+
+        document.addEventListener('keydown', function (e) {
+            const tag = (e.target && e.target.tagName) || '';
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            if (e.key === 'Escape') {
+                if (isSelectingZoom) cancelRegionSelect();
+                else if (tileMode && tileZoomedDeeper) resetRegionZoom();   // back to the tile
+                else if (tileMode) exitTileReview();
+                else if (zoomRegion) resetRegionZoom();
+                return;
+            }
+            if (!tileMode) return;
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); stepTile(1); }
+            else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); stepTile(-1); }
+        });
+
+        // --- Tile review: step through an n×n grid ---
+        // Every rod belongs to exactly one tile (by its centre), so visiting all
+        // tiles reviews every rod exactly once. The view shows a small margin
+        // past the tile edge so border rods are fully visible; those margin rods
+        // belong to the neighbouring tile and are drawn faded.
+        let tileMode = null;            // { n, index, visited: Set } or null
+        let tileZoomedDeeper = false;   // zoomed further inside the current tile
+
+        function tileCellRect(n, index) {
+            const W = processedImage.naturalWidth, H = processedImage.naturalHeight;
+            const r = Math.floor(index / n), c = index % n;
+            const x0 = Math.round(c * W / n), x1 = Math.round((c + 1) * W / n);
+            const y0 = Math.round(r * H / n), y1 = Math.round((r + 1) * H / n);
+            return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        }
+
+        function tileViewRegion(cell) {
+            const W = processedImage.naturalWidth, H = processedImage.naturalHeight;
+            const m = 0.06 * Math.max(cell.w, cell.h);
+            const x0 = Math.max(0, cell.x - m), y0 = Math.max(0, cell.y - m);
+            const x1 = Math.min(W, cell.x + cell.w + m), y1 = Math.min(H, cell.y + cell.h + m);
+            return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        }
+
+        function rodInRect(rod, rect) {
+            return rod.centroid_x >= rect.x && rod.centroid_x < rect.x + rect.w &&
+                   rod.centroid_y >= rect.y && rod.centroid_y < rect.y + rect.h;
+        }
+
+        function startTileReview() {
+            if (!processedImage.naturalWidth) return;
+            if (isZoomActive) toggleZoom();
+            if (isSelectingZoom) cancelRegionSelect();
+            const n = parseInt(document.getElementById('tileGridSelect').value, 10) || 3;
+            tileMode = { n, index: 0, visited: new Set() };
+            document.getElementById('tileSetup').style.display = 'none';
+            document.getElementById('tileNav').style.display = 'inline-flex';
+            const map = document.getElementById('tileMiniMap');
+            map.innerHTML = '';
+            map.style.gridTemplateColumns = `repeat(${n}, 12px)`;
+            for (let i = 0; i < n * n; i++) {
+                const cell = document.createElement('span');
+                cell.className = 'tile-cell';
+                cell.title = `Tile ${i + 1}`;
+                cell.addEventListener('click', () => goToTile(i));
+                map.appendChild(cell);
+            }
+            goToTile(0);
+        }
+
+        function goToTile(i) {
+            if (!tileMode) return;
+            const total = tileMode.n * tileMode.n;
+            tileMode.index = Math.min(total - 1, Math.max(0, i));
+            tileMode.visited.add(tileMode.index);
+            tileZoomedDeeper = false;
+            ledgerShowAll = false;
+            zoomRegion = tileViewRegion(tileCellRect(tileMode.n, tileMode.index));
+            applyRegionZoom();
+            updateTileUI();
+        }
+
+        function stepTile(delta) {
+            if (tileMode) goToTile(tileMode.index + delta);
+        }
+
+        function exitTileReview() {
+            tileMode = null;
+            tileZoomedDeeper = false;
+            ledgerShowAll = false;
+            document.getElementById('tileSetup').style.display = 'inline-flex';
+            document.getElementById('tileNav').style.display = 'none';
+            zoomRegion = null;
+            applyRegionZoom();
+        }
+
+        function updateTileUI() {
+            if (!tileMode) return;
+            const total = tileMode.n * tileMode.n;
+            document.getElementById('tileCounter').textContent =
+                `Tile ${tileMode.index + 1} / ${total} · ${tileMode.visited.size} viewed`;
+            document.getElementById('tilePrevBtn').disabled = tileMode.index === 0;
+            document.getElementById('tileNextBtn').disabled = tileMode.index === total - 1;
+            document.querySelectorAll('#tileMiniMap .tile-cell').forEach((cell, i) => {
+                cell.classList.toggle('visited', tileMode.visited.has(i));
+                cell.classList.toggle('current', i === tileMode.index);
+            });
+        }
+
+        // --- Ledger follows the view ---
+        // Rows are HIDDEN (never removed), so results, "Add to Folder Analysis",
+        // outlier detection and the overlay keep using the whole image.
+        let ledgerShowAll = false;      // user asked to see every row while zoomed
+        let lastZoomGeom = null;        // set by applyRegionZoom
+        let lastLedgerKey = '';
+
+        function currentLedgerRect() {
+            if (ledgerShowAll) return null;
+            if (tileMode) return tileCellRect(tileMode.n, tileMode.index);
+            if (!zoomRegion || !lastZoomGeom) return null;
+            // Visible part of the image, from the zoom geometry.
+            const g = lastZoomGeom;
+            const nw = processedImage.naturalWidth, nh = processedImage.naturalHeight;
+            const x0 = Math.max(0, (-g.ox - g.tx) / g.k / g.s);
+            const x1 = Math.min(nw, (g.W - g.ox - g.tx) / g.k / g.s);
+            const y0 = Math.max(0, (-g.oy - g.ty) / g.k / g.s);
+            const y1 = Math.min(nh, (g.H - g.oy - g.ty) / g.k / g.s);
+            return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+        }
+
+        function updateLedgerFilter() {
+            const rect = currentLedgerRect();
+            document.querySelectorAll('#dataTable tbody tr').forEach(tr => {
+                const cb = tr.querySelector('.rod-checkbox');
+                const rod = cb ? currentData[parseInt(cb.dataset.index, 10)] : null;
+                tr.style.display = (!rect || !rod || rodInRect(rod, rect)) ? '' : 'none';
+            });
+            // Jump the table back to the top when the view changes.
+            const key = rect ? [rect.x, rect.y, rect.w, rect.h].map(Math.round).join(',') : 'all';
+            if (key !== lastLedgerKey) {
+                lastLedgerKey = key;
+                const box = document.querySelector('.scrollable-table');
+                if (box) box.scrollTop = 0;
+            }
+            syncSelectAllState();   // also refreshes the banner
+        }
+
+        function visibleLedgerRows() {
+            return Array.from(document.querySelectorAll('#dataTable tbody tr'))
+                .filter(tr => tr.style.display !== 'none');
+        }
+
+        function updateLedgerBanner() {
+            const banner = document.getElementById('ledgerViewBanner');
+            if (!banner) return;
+            if (!tileMode && !zoomRegion) { banner.style.display = 'none'; return; }
+            const all = document.querySelectorAll('#dataTable tbody tr').length;
+            const shown = visibleLedgerRows();
+            const selected = shown.filter(tr => { const cb = tr.querySelector('.rod-checkbox'); return cb && cb.checked; }).length;
+            const where = tileMode ? `tile ${tileMode.index + 1}` : 'this view';
+            banner.textContent = ledgerShowAll
+                ? `Showing all ${all} rods.`
+                : `Showing ${shown.length} of ${all} rods in ${where} (${selected} selected).`;
+            const link = document.createElement('button');
+            link.type = 'button';
+            link.textContent = ledgerShowAll ? `Show only rods in ${where}` : 'Show all';
+            link.addEventListener('click', () => { ledgerShowAll = !ledgerShowAll; updateLedgerFilter(); });
+            banner.appendChild(link);
+            banner.style.display = 'block';
+        }
 
         async function downloadFilteredReport() {
             const checkboxes = document.querySelectorAll('.rod-checkbox');
@@ -1744,12 +2291,21 @@
                 const originalText = downloadBtn.innerText;
                 downloadBtn.innerText = "Generating Report...";
 
+                // Annotated image (included/excluded boxes + IDs) for its own sheet.
+                let annotatedImage = null;
+                try {
+                    annotatedImage = (await renderAnnotatedImage(2000)).toDataURL('image/jpeg', 0.85);
+                } catch (e) {
+                    console.error('Annotated image for Excel failed; exporting without it:', e);
+                }
+
                 const response = await fetch('/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         image_id: imageId,
-                        selected_ids: selectedIds
+                        selected_ids: selectedIds,
+                        annotated_image: annotatedImage
                     })
                 });
 
@@ -1760,7 +2316,7 @@
                     a.href = url;
                     // Use filename from response header if possible, or fallback to currentFilename
                     // But simpler: just use our known filename format
-                    a.download = `${currentFilename || imageId}_detected.xlsx`;
+                    a.download = `${(currentFilename || imageId).replace(/\.[^.]+$/, '')}_detected.xlsx`;
                     document.body.appendChild(a);
                     a.click();
                     a.remove();
@@ -1849,16 +2405,25 @@
                 }
             });
 
+            const btn = document.getElementById('addToFolderBtn');
+            const statusEl = document.getElementById('addToFolderStatus');
+            const showStatus = (msg, color) => {
+                statusEl.textContent = msg;
+                statusEl.style.color = color;
+                statusEl.style.display = 'block';
+            };
+
             if (selectedIds.length === 0) {
-                alert("Please select at least one particle.");
+                showStatus('Select at least one particle first.', '#dc3545');
                 return;
             }
 
+            // Inline feedback on the button itself — popup alert() is blocked
+            // in some embedded browsers, and the instant text swap looked like
+            // a flicker. min-width on the button keeps the layout stable.
             try {
-                const btn = document.getElementById('addToFolderBtn');
-                const originalText = btn.innerText;
-                btn.innerText = "Saving...";
                 btn.disabled = true;
+                statusEl.style.display = 'none';
 
                 const response = await fetch(`/folders/${encodeURIComponent(folderParam)}/save_selection`, {
                     method: 'POST',
@@ -1871,113 +2436,286 @@
 
                 if (response.ok) {
                     const res = await response.json();
-                    alert(`Successfully added ${res.count} particles from this image to folder analysis.`);
+                    btn.innerText = `✓ Added ${res.count} particles`;
+                    btn.style.backgroundColor = '#1e7e34';
                 } else {
-                    const err = await response.json();
-                    alert("Error: " + (err.detail || "Server Error"));
+                    const err = await response.json().catch(() => ({}));
+                    btn.innerText = 'Failed — try again';
+                    btn.style.backgroundColor = '#dc3545';
+                    showStatus('Error: ' + (err.detail || 'Server Error'), '#dc3545');
                 }
-
-                btn.innerText = "Add to Folder Analysis";
-                btn.disabled = false;
             } catch (e) {
                 console.error(e);
-                alert("Failed to save selection.");
-                document.getElementById('addToFolderBtn').innerText = "Add to Folder Analysis";
+                btn.innerText = 'Failed — try again';
+                btn.style.backgroundColor = '#dc3545';
+                showStatus('Could not reach the server.', '#dc3545');
+            } finally {
+                setTimeout(() => {
+                    btn.innerText = 'Add to Folder Analysis';
+                    btn.style.backgroundColor = '#28a745';
+                    btn.disabled = false;
+                }, 2500);
+            }
+        }
+
+        // ===================== Reports (PDF + Excel image) =====================
+
+        function reportUnit() {
+            return currentIsPlaceholderCalibration ? 'px' : 'nm';
+        }
+
+        function collectSelection() {
+            const included = [], excluded = [];
+            currentData.forEach((rod, idx) => (getCheckboxStateByIndex(idx) ? included : excluded).push(rod));
+            const byId = (a, b) => (a.id ?? 0) - (b.id ?? 0);
+            return { included: included.sort(byId), excluded: excluded.sort(byId), total: currentData.length };
+        }
+
+        // Same definitions as the Excel export (pandas): sample SD (n−1),
+        // linearly interpolated percentiles.
+        function summaryStats(values) {
+            const v = values.filter(Number.isFinite).sort((a, b) => a - b);
+            const n = v.length;
+            if (!n) return null;
+            const mean = v.reduce((a, b) => a + b, 0) / n;
+            const sd = n > 1 ? Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)) : 0;
+            return {
+                n, mean, sd,
+                median: _quantile(v, 0.5), d10: _quantile(v, 0.10), d90: _quantile(v, 0.90),
+                cv: mean ? sd / mean * 100 : 0, min: v[0], max: v[n - 1]
+            };
+        }
+
+        function loadImage(url) {
+            return new Promise((resolve, reject) => {
+                const im = new Image();
+                im.onload = () => resolve(im);
+                im.onerror = () => reject(new Error('Could not load image for the report'));
+                im.src = url;
+            });
+        }
+
+        // The full image with every particle box (solid blue = included, dashed
+        // orange = excluded) and colour-coded IDs. Independent of the on-screen
+        // zoom/tile state, so the report always looks the same.
+        async function renderAnnotatedImage(maxSide = 3000) {
+            const base = await loadImage(currentImageUrls.processed || processedImage.src);
+            const nw = base.naturalWidth, nh = base.naturalHeight;
+            const f = Math.min(1, maxSide / Math.max(nw, nh));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(nw * f);
+            canvas.height = Math.round(nh * f);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(base, 0, 0, canvas.width, canvas.height);
+
+            // Label/line size follow the typical rod size in the output, so dense
+            // images of tiny rods stay readable when zoomed in the PDF.
+            const shorts = currentData.map(r => r.width_nm / currentPixelSize * f).filter(x => x > 0).sort((a, b) => a - b);
+            const medShort = shorts.length ? shorts[Math.floor(shorts.length / 2)] : 20;
+            const fontPx = Math.max(9, Math.min(26, medShort * 0.65));
+            const lineW = Math.max(1.5, Math.min(4, fontPx / 7));
+
+            ctx.save();
+            ctx.scale(f, f);                 // boxes are in natural-image pixels
+            currentData.forEach((rod, idx) => {
+                const sel = getCheckboxStateByIndex(idx);
+                pathParticle(ctx, getParticleBoxPoints(rod));
+                ctx.setLineDash(sel ? [] : [lineW * 3 / f, lineW * 2.5 / f]);
+                ctx.lineWidth = lineW / f;
+                ctx.strokeStyle = sel ? '#0a40ff' : '#ff8c00';
+                ctx.stroke();
+            });
+            ctx.restore();
+            ctx.setLineDash([]);
+
+            ctx.font = `bold ${fontPx}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(2, fontPx / 6);
+            currentData.forEach(rod => {
+                const label = String(rod.id ?? '');
+                if (!label) return;
+                const x = rod.centroid_x * f, y = rod.centroid_y * f;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+                ctx.strokeText(label, x, y);
+                ctx.fillStyle = ID_DECADE_COLORS[Math.floor((rod.id ?? 0) / 10) % ID_DECADE_COLORS.length];
+                ctx.fillText(label, x, y);
+            });
+            return canvas;
+        }
+
+        function finishedChartImage(chart) {
+            if (!chart) return null;
+            try {
+                chart.stop();
+                chart.update('none');      // finish drawing instantly (no half-animated bars)
+                return { data: chart.canvas.toDataURL('image/png'), w: chart.canvas.width, h: chart.canvas.height };
+            } catch (e) {
+                console.error('Chart capture failed:', e);
+                return null;
             }
         }
 
         async function downloadPDF() {
-            const element = document.getElementById('analysisResults');
-
-            // Create a temporary container for PDF generation
-            const pdfContainer = document.createElement('div');
-            pdfContainer.style.width = '100%';
-            pdfContainer.style.background = 'white';
-            pdfContainer.style.padding = '20px';
-
-            // Add Header Info
-            const title = document.createElement('h2');
-            title.innerText = `Analysis Report: ${currentFilename}`;
-            title.style.textAlign = 'center';
-            title.style.marginBottom = '20px';
-            pdfContainer.appendChild(title);
-
-            // Add the currently displayed image (resized for PDF)
-            const imgContainer = document.createElement('div');
-            imgContainer.style.display = 'flex';
-            imgContainer.style.justifyContent = 'center';
-            imgContainer.style.marginBottom = '20px';
-            imgContainer.style.height = '350px';
-
-            // Composite the base image with the live overlay (boxes, IDs and the
-            // current selection state) so the report matches what is on screen.
-            const img2 = document.createElement('img');
-            try {
-                const srcImg = document.getElementById('processedImage');
-                renderParticleOverlay();
-                const composite = document.createElement('canvas');
-                composite.width = srcImg.naturalWidth || particleOverlayCanvas.width;
-                composite.height = srcImg.naturalHeight || particleOverlayCanvas.height;
-                const cctx = composite.getContext('2d');
-                cctx.drawImage(srcImg, 0, 0, composite.width, composite.height);
-                cctx.drawImage(particleOverlayCanvas, 0, 0, composite.width, composite.height);
-                img2.src = composite.toDataURL('image/jpeg', 0.9);
-            } catch (e) {
-                console.error('Overlay composite failed, using plain image:', e);
-                img2.src = document.getElementById('processedImage').src;
+            if (!currentData || !currentData.length) { alert('No particles to report.'); return; }
+            if (!window.jspdf || !window.jspdf.jsPDF) {
+                alert('PDF library not loaded — check the internet connection and reload the page.');
+                return;
             }
-            img2.style.maxHeight = '100%';
-            img2.style.maxWidth = '80%';
-            img2.style.objectFit = 'contain';
-            img2.style.transform = 'none';
-            imgContainer.appendChild(img2);
-            pdfContainer.appendChild(imgContainer);
+            const btn = document.getElementById('downloadPdfBtn');
+            const btnText = btn ? btn.textContent : '';
+            if (btn) { btn.textContent = 'Building PDF…'; btn.disabled = true; }
+            try {
+                calculateAnalysis(true);   // statistics + histograms reflect the current selection
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+                const PW = 210, PH = 297, M = 14, CW = PW - 2 * M;
+                const unit = reportUnit();
+                const sel = collectSelection();
+                const nameStem = (currentFilename || imageId).replace(/\.[^.]+$/, '');
+                const calibText = (document.getElementById('calibrationMethod').textContent || '-').trim();
+                const pxText = currentIsPlaceholderCalibration ? 'uncalibrated (sizes in px)' : `${currentPixelSize.toFixed(4)} nm/px`;
 
-            // Clone Results Section
-            const clonedContent = element.cloneNode(true);
+                // ---- Page 1: header, annotated image, statistics ----
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+                doc.text('RodSizer particle size report', M, 16);
+                doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                const meta = [
+                    `Image: ${currentFilename || imageId}`,
+                    folderParam ? `Folder: ${folderParam}` : null,
+                    `Calibration: ${calibText}  ·  Pixel size: ${pxText}`,
+                    `Generated: ${new Date().toLocaleString()}`
+                ].filter(Boolean);
+                doc.text(meta, M, 22);
+                let y = 22 + meta.length * 4.4 + 2;
 
-            // Remove buttons from PDF
-            const buttons = clonedContent.querySelectorAll('button, a.btn');
-            buttons.forEach(btn => btn.remove());
+                // 2400 px keeps rods zoomable in the PDF viewer at a sensible file size.
+                const imgCanvas = await renderAnnotatedImage(2400);
+                const maxImgH = 150;
+                let iw = CW, ih = iw * imgCanvas.height / imgCanvas.width;
+                if (ih > maxImgH) { ih = maxImgH; iw = ih * imgCanvas.width / imgCanvas.height; }
+                doc.addImage(imgCanvas.toDataURL('image/jpeg', 0.82), 'JPEG', M + (CW - iw) / 2, y, iw, ih);
+                y += ih + 4;
+                doc.setFontSize(8.5); doc.setTextColor(90);
+                doc.text(`Solid blue boxes: included (${sel.included.length})  ·  dashed orange: excluded (${sel.excluded.length})  ·  numbers are particle IDs (listed on the following pages)`, M, y);
+                doc.setTextColor(0);
+                y += 6;
 
-            // Replace Chart Canvases with Images (Crucial for PDF)
-            const originalCanvases = element.querySelectorAll('canvas');
-            const clonedCanvases = clonedContent.querySelectorAll('canvas');
-
-            originalCanvases.forEach((origCanvas, index) => {
-                if (!clonedCanvases[index]) return;
-                try {
-                    const imgData = origCanvas.toDataURL('image/png');
-                    const img = document.createElement('img');
-                    img.src = imgData;
-                    img.style.width = '100%';
-                    img.style.maxHeight = '200px';
-                    img.style.objectFit = 'contain';
-                    img.style.display = 'block';
-
-                    const clonedCanvas = clonedCanvases[index];
-                    clonedCanvas.parentNode.replaceChild(img, clonedCanvas);
-                } catch (e) {
-                    console.error("Chart capture error:", e);
+                const L = summaryStats(sel.included.map(r => Number(r.length_nm)));
+                const Wd = summaryStats(sel.included.map(r => Number(r.width_nm)));
+                const AR = summaryStats(sel.included.map(r => Number(r.aspect_ratio)));
+                const f1 = x => x.toFixed(1), f2 = x => x.toFixed(2);
+                const rowsFor = (label, fn) => [label, fn(L), fn(Wd), fn(AR)];
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text('Statistics (included particles)', M, y);
+                if (L) {
+                    doc.autoTable({
+                        startY: y + 2,
+                        margin: { left: M, right: M },
+                        head: [['', `Length (${unit})`, `Width (${unit})`, 'Aspect ratio']],
+                        body: [
+                            rowsFor('Mean ± SD', s => s === AR ? `${f2(s.mean)} ± ${f2(s.sd)}` : `${f1(s.mean)} ± ${f1(s.sd)}`),
+                            rowsFor('Median', s => s === AR ? f2(s.median) : f1(s.median)),
+                            rowsFor('D10 – D90', s => s === AR ? `${f2(s.d10)} – ${f2(s.d90)}` : `${f1(s.d10)} – ${f1(s.d90)}`),
+                            rowsFor('CV (%)', s => f1(s.cv)),
+                            rowsFor('Min – Max', s => s === AR ? `${f2(s.min)} – ${f2(s.max)}` : `${f1(s.min)} – ${f1(s.max)}`),
+                        ],
+                        theme: 'grid',
+                        styles: { fontSize: 9, cellPadding: 1.6, halign: 'center' },
+                        columnStyles: { 0: { halign: 'left', fontStyle: 'bold' } },
+                        headStyles: { fillColor: [0, 123, 255] }
+                    });
+                    y = doc.lastAutoTable.finalY + 5;
+                    const rodYield = sel.included.filter(r => Number(r.aspect_ratio) >= 1.5).length / sel.included.length * 100;
+                    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                    doc.text(`Particles included: ${sel.included.length} of ${sel.total}  ·  Rod yield (AR >= 1.5): ${rodYield.toFixed(1)}%  ·  SD is the sample standard deviation (n-1).`, M, y);
+                } else {
+                    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+                    doc.text('No particles are included.', M, y + 6);
                 }
-            });
 
-            pdfContainer.appendChild(clonedContent);
+                // ---- Page 2: histograms + included particles ----
+                doc.addPage();
+                y = 16;
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text('Size distributions (included particles)', M, y);
+                y += 3;
+                const charts = [finishedChartImage(lengthChartInstance), finishedChartImage(widthChartInstance)].filter(Boolean);
+                if (charts.length) {
+                    const gap = 4, cw = (CW - gap) / 2;
+                    let maxH = 0;
+                    charts.forEach((c, i) => {
+                        const ch = cw * c.h / c.w;
+                        doc.addImage(c.data, 'PNG', M + i * (cw + gap), y, cw, ch);
+                        maxH = Math.max(maxH, ch);
+                    });
+                    y += maxH + 7;
+                }
 
-            const opt = {
-                margin: 0.5,
-                filename: `${currentFilename}_report.pdf`,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true },
-                jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
-            };
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text(`Included particles (${sel.included.length})`, M, y);
+                // Three particles per table row keeps a 500-rod list to a few pages.
+                const per = 3, body = [];
+                const fmt = r => [String(r.id ?? ''), f1(Number(r.length_nm)), f1(Number(r.width_nm)), f2(Number(r.aspect_ratio))];
+                for (let i = 0; i < sel.included.length; i += per) {
+                    const row = [];
+                    for (let j = 0; j < per; j++) {
+                        const r = sel.included[i + j];
+                        row.push(...(r ? fmt(r) : ['', '', '', '']));
+                    }
+                    body.push(row);
+                }
+                const headGroup = ['ID', `L (${unit})`, `W (${unit})`, 'AR'];
+                doc.autoTable({
+                    startY: y + 2,
+                    margin: { left: M, right: M, top: 14 },
+                    head: [[...headGroup, ...headGroup, ...headGroup]],
+                    body,
+                    theme: 'striped',
+                    styles: { fontSize: 7.5, cellPadding: 1, halign: 'center' },
+                    headStyles: { fillColor: [0, 123, 255] },
+                    // Visual separation between the three column groups.
+                    didParseCell: data => { if (data.column.index % 4 === 0) data.cell.styles.fontStyle = 'bold'; },
+                    willDrawCell: data => {
+                        if (data.column.index % 4 === 0 && data.column.index > 0) {
+                            doc.setDrawColor(150); doc.setLineWidth(0.3);
+                            doc.line(data.cell.x, data.cell.y, data.cell.x, data.cell.y + data.cell.height);
+                        }
+                    }
+                });
+                y = doc.lastAutoTable.finalY + 7;
 
-            html2pdf().set(opt).from(pdfContainer).save();
+                // Excluded particle IDs (so the selection can be reproduced).
+                const exText = sel.excluded.length ? sel.excluded.map(r => r.id).join(', ') : 'none';
+                const exLines = doc.splitTextToSize(exText, CW);
+                if (y + 6 + exLines.length * 3.6 > PH - 14) { doc.addPage(); y = 16; }
+                doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+                doc.text(`Excluded particles (${sel.excluded.length})`, M, y);
+                doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+                doc.text(exLines, M, y + 5);
+
+                // Footer on every page.
+                const pages = doc.getNumberOfPages();
+                for (let p = 1; p <= pages; p++) {
+                    doc.setPage(p);
+                    doc.setFontSize(8); doc.setTextColor(130);
+                    doc.text(`${nameStem}  ·  page ${p} of ${pages}`, PW / 2, PH - 7, { align: 'center' });
+                    doc.setTextColor(0);
+                }
+
+                doc.save(`${nameStem}_report.pdf`);
+            } catch (e) {
+                console.error('PDF report failed:', e);
+                alert('Could not build the PDF report: ' + e.message);
+            } finally {
+                if (btn) { btn.textContent = btnText; btn.disabled = false; }
+            }
         }
 
         // --- Click on particle to toggle checkbox ---
         document.getElementById('processedImage').addEventListener('click', function(e) {
-            if (isZoomActive || isDrawingLine) return;
+            if (isZoomActive || isDrawingLine || isSelectingZoom || suppressNextImageClick) return;
             if (!currentData || currentData.length === 0) return;
 
             const img = this;
@@ -2064,6 +2802,8 @@
         function showCalibrationPanel(calibInfo) {
             const method = calibInfo ? calibInfo.method : 'default';
             const needsCalibration = method === 'default' || method === 'uncalibrated' || (calibInfo && calibInfo.is_placeholder);
+            // A manual value is an optional override; offer the way back.
+            document.getElementById('useAutoCalRow').style.display = method === 'manual' ? 'block' : 'none';
             const panel = document.getElementById('calibrationPanel');
             const toggleBtn = document.getElementById('toggleCalibrationBtn');
             const title = document.getElementById('calibrationPanelTitle');
@@ -2096,6 +2836,7 @@
 
             // Disable zoom while drawing
             if (isZoomActive) toggleZoom();
+            if (isSelectingZoom) cancelRegionSelect();   // an active area zoom can stay: drawing zoomed-in is more precise
 
             if (!syncScaleCanvasToImage()) {
                 alert('Image is still loading. Please try again in a moment.');
@@ -2166,6 +2907,65 @@
             scaleCtx.stroke();
         });
 
+        async function applyPixelSize() {
+            const statusEl = document.getElementById('pixelSizeStatus');
+            const raw = parseFloat(document.getElementById('pixelSizeInput').value);
+            const unit = document.getElementById('pixelSizeUnitSelect').value;
+            if (!raw || raw <= 0) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Enter a valid pixel size.';
+                return;
+            }
+
+            // Convert the entered pixel size to nm per pixel (the app's native unit).
+            // An unrecognised unit is an error, never silently treated as nm —
+            // a wrong unit would make every measurement wrong by 10-1000x.
+            const NM_PER_UNIT = { pm: 0.001, angstrom: 0.1, nm: 1 };
+            if (!(unit in NM_PER_UNIT)) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = `Unknown unit "${unit}".`;
+                return;
+            }
+            // 250.3 pm -> 0.2503 nm (toPrecision trims float noise like 0.30000000000000004)
+            const pixelSizeNm = Number((raw * NM_PER_UNIT[unit]).toPrecision(12));
+
+            // Hide the draw-line canvas if it happens to be open.
+            scaleCanvas.style.display = 'none';
+            scaleCtx.clearRect(0, 0, scaleCanvas.width, scaleCanvas.height);
+
+            statusEl.style.color = '#888';
+            statusEl.textContent = `Reprocessing at ${pixelSizeNm.toFixed(4)} nm/px...`;
+            try {
+                await processImage({
+                    manualPixelSize: pixelSizeNm,
+                    binaryMaskTune: appliedBinaryMaskTune,
+                    forceReprocess: true
+                });
+                calibrationPanelOpen = false;
+                statusEl.textContent = '';
+            } catch (e) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function useAutomaticCalibration() {
+            const statusEl = document.getElementById('autoCalStatus');
+            statusEl.style.color = '#888';
+            statusEl.textContent = 'Reprocessing...';
+            try {
+                await processImage({
+                    useAutomaticCalibration: true,
+                    binaryMaskTune: appliedBinaryMaskTune,
+                    forceReprocess: true
+                });
+                statusEl.textContent = '';
+            } catch (e) {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = 'Error: ' + e.message;
+            }
+        }
+
         async function applyManualScale() {
             const nmValue = parseFloat(document.getElementById('scaleNmInput').value);
             if (!nmValue || nmValue <= 0) {
@@ -2204,7 +3004,7 @@
 
         window.addEventListener('resize', function() {
             syncParticleOverlayToImage();
-            renderParticleOverlay();
+            applyRegionZoom();   // re-fit an active area zoom; renders the overlay
             if (scaleCanvas.style.display === 'block') {
                 syncScaleCanvasToImage();
             }

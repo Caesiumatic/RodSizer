@@ -267,8 +267,8 @@ def _read_tiff_pixel_size(image_path):
             if info_str:
                 # Try "Pixel Width = 0.245 nm" or "Scale = 0.5 um" patterns
                 for pattern in [
-                    r'pixel\s*(?:width|size)\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\b',
-                    r'scale\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\b',
+                    r'pixel\s*(?:width|size)\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
+                    r'scale\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
                 ]:
                     m = re.search(pattern, info_str, re.IGNORECASE)
                     if m:
@@ -322,8 +322,8 @@ def _read_tiff_pixel_size(image_path):
 
                     # DigitalMicrograph/JEOL headers often store PixelSizeX/Y as UTF-16-ish bytes.
                     for pattern in [
-                        r'PixelSize(?:[XY])?[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(nm|µm|um|mm|m)\b',
-                        r'Pixel(?:Width|Height)(?:[XY])?[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(nm|µm|um|mm|m)\b',
+                        r'PixelSize(?:[XY])?[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
+                        r'Pixel(?:Width|Height)(?:[XY])?[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
                     ]:
                         m = re.search(pattern, fei_meta, re.IGNORECASE | re.DOTALL)
                         if m:
@@ -339,9 +339,9 @@ def _read_tiff_pixel_size(image_path):
             if desc_tag:
                 desc = str(desc_tag.value)
                 for pattern in [
-                    r'pixel\s*size\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\b',
-                    r'scale\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\b',
-                    r'resolution\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\s*/\s*(?:pixel|px)',
+                    r'pixel\s*size\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
+                    r'scale\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
+                    r'resolution\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\s*/\s*(?:pixel|px)',
                 ]:
                     m = re.search(pattern, desc, re.IGNORECASE)
                     if m:
@@ -389,8 +389,8 @@ def _read_tiff_pixel_size(image_path):
                     if len(tag_str) > 20000:
                         continue  # skip huge binary blobs
                     for pattern in [
-                        r'(?:pixel|image)\s*(?:width|size|scale|resolution)\s*[=:]\s*([\d.eE+-]+)\s*(nm|µm|um|mm|m)\b',
-                        r'(?:pixel|image)\s*(?:width|size|scale|resolution)[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(nm|µm|um|mm|m)\b',
+                        r'(?:pixel|image)\s*(?:width|size|scale|resolution)\s*[=:]\s*([\d.eE+-]+)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
+                        r'(?:pixel|image)\s*(?:width|size|scale|resolution)[^0-9-]{0,80}(-?[\d.]+(?:e[-+]?\d+)?)\s*(pm|Å|angstroms?|nm|µm|um|mm|m)\b',
                     ]:
                         m = re.search(pattern, tag_str, re.IGNORECASE | re.DOTALL)
                         if m:

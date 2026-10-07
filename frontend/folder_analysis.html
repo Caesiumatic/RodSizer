@@ -271,6 +271,17 @@
                         <div class="chart-wrapper"><canvas id="lengthChart"></canvas></div>
                         <div class="chart-wrapper"><canvas id="widthChart"></canvas></div>
                     </div>
+
+                    <h2 style="margin-top: 25px;">Detailed Statistics</h2>
+                    <table id="extendedStatsTable" style="width: 100%; max-width: 640px; border-collapse: collapse; font-size: 14px;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; padding: 6px 10px; border-bottom: 2px solid #ddd;">Metric</th>
+                                <th style="text-align:right; padding: 6px 10px; border-bottom: 2px solid #ddd;">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
 
                 <h2>Batch Ledger</h2>
@@ -278,11 +289,11 @@
                     <table id="dataTable">
                         <thead>
                             <tr>
-                                <th>Source Image</th>
-                                <th>ID</th>
-                                <th>L (nm)</th>
-                                <th>W (nm)</th>
-                                <th>AR</th>
+                                <th onclick="sortTable('source_image')" title="Click to sort" style="cursor:pointer; user-select:none;">Source Image <span class="sort-arrow" data-col="source_image"></span></th>
+                                <th onclick="sortTable('id')" title="Click to sort" style="cursor:pointer; user-select:none;">ID <span class="sort-arrow" data-col="id"></span></th>
+                                <th onclick="sortTable('length_nm')" title="Click to sort" style="cursor:pointer; user-select:none;">L (nm) <span class="sort-arrow" data-col="length_nm"></span></th>
+                                <th onclick="sortTable('width_nm')" title="Click to sort" style="cursor:pointer; user-select:none;">W (nm) <span class="sort-arrow" data-col="width_nm"></span></th>
+                                <th onclick="sortTable('aspect_ratio')" title="Click to sort" style="cursor:pointer; user-select:none;">AR <span class="sort-arrow" data-col="aspect_ratio"></span></th>
                             </tr>
                         </thead>
                         <tbody></tbody>
@@ -294,6 +305,47 @@
         <script>
             const urlParams = new URLSearchParams(window.location.search);
             const folderName = urlParams.get('folder');
+
+            // Synthesis date pulled from the folder name (e.g. "260113_Jan07_Synthesis"
+            // -> "Jan07"). Shown on each distribution plot so screenshots for slides
+            // or reports are self-labeling. Falls back to the full folder name.
+            function synthesisLabel(name) {
+                if (!name) return '';
+                let s = name.replace(/_?synthesis$/i, '');   // drop trailing _Synthesis
+                s = s.replace(/^\d+[_-]/, '');                // drop leading date-code prefix
+                // If it's Month+day+full year mashed together (Jun172026), drop
+                // the year so it reads like "Jun17"; leave "Jan07"/"Jun20" alone.
+                s = s.replace(/^([A-Za-z]{3,}\d{1,2})(19|20)\d{2}$/, '$1');
+                return s || name;
+            }
+            const SYNTH_LABEL = synthesisLabel(folderName);
+
+            // Chart.js plugin: draw the synthesis label in the plot's top-left
+            // corner, on the canvas itself (so it is captured by screenshots and
+            // the PDF export alike).
+            const synthLabelPlugin = {
+                id: 'synthLabel',
+                afterDraw(chart) {
+                    if (!SYNTH_LABEL) return;
+                    // The length + width plots read as one figure, so the date
+                    // is drawn once, on the left (length) plot only.
+                    if (chart.canvas && chart.canvas.id !== 'lengthChart') return;
+                    const { ctx, chartArea } = chart;
+                    if (!chartArea) return;
+                    ctx.save();
+                    ctx.font = 'bold 16px "Segoe UI", Arial, sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'top';
+                    const x = chartArea.left + 8;
+                    const y = chartArea.top + 6;
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+                    ctx.strokeText(SYNTH_LABEL, x, y);
+                    ctx.fillStyle = '#222';
+                    ctx.fillText(SYNTH_LABEL, x, y);
+                    ctx.restore();
+                }
+            };
 
             if (!folderName) {
                 alert("No folder specified");
@@ -308,6 +360,8 @@
             dlBtn.href = `/folders/${encodeURIComponent(folderName)}/export_aggregate`;
 
             let lengthChart, widthChart;
+            let currentData = [];
+            let currentSort = { column: null, direction: 'asc' };
 
             async function loadAggregateData() {
                 try {
@@ -337,15 +391,58 @@
                 document.getElementById('meanWidth').textContent = data.stats.mean_width || "-";
                 document.getElementById('meanAR').textContent = data.stats.mean_ar || "-";
 
+                // Detailed statistics table (median, D10/D90, CV%, rod yield)
+                const statsBody = document.querySelector('#extendedStatsTable tbody');
+                statsBody.innerHTML = '';
+                (data.extended_stats || []).forEach(row => {
+                    const tr = document.createElement('tr');
+                    const tdMetric = document.createElement('td');
+                    tdMetric.textContent = row.Metric;
+                    tdMetric.style.cssText = 'padding: 5px 10px; border-bottom: 1px solid #eee;';
+                    const tdValue = document.createElement('td');
+                    tdValue.textContent = row.Value;
+                    tdValue.style.cssText = 'padding: 5px 10px; border-bottom: 1px solid #eee; text-align: right; font-variant-numeric: tabular-nums;';
+                    tr.appendChild(tdMetric);
+                    tr.appendChild(tdValue);
+                    statsBody.appendChild(tr);
+                });
+
                 // Charts
-                const items = data.data;
+                currentData = data.data || [];
+                const items = currentData;
                 const lengths = items.map(d => d.length_nm);
                 const widths = items.map(d => d.width_nm);
 
                 lengthChart = createHistogram('lengthChart', 'Length Distribution', lengths);
                 widthChart = createHistogram('widthChart', 'Width Distribution', widths);
 
-                // Table
+                renderTable();
+            }
+
+            function renderTable() {
+                let items = currentData.slice();
+
+                if (currentSort.column) {
+                    const col = currentSort.column;
+                    const dir = currentSort.direction === 'asc' ? 1 : -1;
+                    items.sort((a, b) => {
+                        const va = a[col], vb = b[col];
+                        if (typeof va === 'string' || typeof vb === 'string') {
+                            return String(va ?? '').localeCompare(String(vb ?? '')) * dir;
+                        }
+                        return ((va ?? 0) - (vb ?? 0)) * dir;
+                    });
+                }
+
+                // Update header arrows
+                document.querySelectorAll('#dataTable .sort-arrow').forEach(span => {
+                    if (span.dataset.col === currentSort.column) {
+                        span.textContent = currentSort.direction === 'asc' ? '▲' : '▼';
+                    } else {
+                        span.textContent = '';
+                    }
+                });
+
                 const tbody = document.querySelector('#dataTable tbody');
                 tbody.innerHTML = '';
                 items.forEach(item => {
@@ -364,6 +461,16 @@
                     });
                     tbody.appendChild(tr);
                 });
+            }
+
+            function sortTable(column) {
+                if (currentSort.column === column) {
+                    currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSort.column = column;
+                    currentSort.direction = 'asc';
+                }
+                renderTable();
             }
 
             function createHistogram(canvasId, label, data) {
@@ -402,6 +509,7 @@
 
                 return new Chart(ctx, {
                     type: 'bar',
+                    plugins: [synthLabelPlugin],
                     data: {
                         labels: binCenters,
                         datasets: [{
@@ -429,8 +537,21 @@
                         responsive: true,
                         maintainAspectRatio: false,
                         scales: {
-                            x: { ticks: { maxTicksLimit: 10, maxRotation: 45 } },
-                            y: { beginAtZero: true }
+                            x: {
+                                title: { display: true, text: 'Nanometers' },
+                                ticks: {
+                                    maxTicksLimit: 10,
+                                    maxRotation: 0,
+                                    // whole numbers only on the size axis
+                                    callback: function (value) {
+                                        return Math.round(parseFloat(this.getLabelForValue(value)));
+                                    }
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: 'Number of particles' }
+                            }
                         },
                         animation: false,
                         layout: { padding: { right: 20 } }

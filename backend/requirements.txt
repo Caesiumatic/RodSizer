@@ -1,24 +1,24 @@
-fastapi
-uvicorn
-python-multipart
-numpy
-opencv-python-headless
-scikit-image
-ncempy
-matplotlib
-pandas
-Pillow
-pytesseract
-tifffile
-openpyxl
-h5py
+# Pinned, known-good dependency set (tested on Python 3.12, July 2026).
+# Pinning exact versions keeps every computer running identical code —
+# unpinned installs were a major source of "works here, not there" bugs.
+# Python 3.10-3.12 required (numpy 1.26 has no wheels for 3.13+).
+fastapi==0.122.0
+uvicorn==0.38.0
+python-multipart==0.0.20
+numpy==1.26.4
+opencv-python-headless==4.12.0.88
+scikit-image==0.25.2
+ncempy==1.14
+matplotlib==3.10.7
+pandas==2.3.3
+Pillow==12.0.0
+pytesseract==0.3.13
+tifffile==2025.10.16
+openpyxl==3.1.5
+h5py==3.15.1
 
-# --- Heavy deps kept for possible future ML detection (NOT used right now) ---
-# stardist + tensorflow are the main reason the FIRST-TIME setup is slow (~5-10
-# min) and large (~1 GB+): they pull in a full TensorFlow build. The current
-# detection pipeline is K-means + distance-transform watershed and does NOT use
-# them (they are imported nowhere in the hot path). They are kept on purpose in
-# case StarDist-based detection is added later. Remove these two lines if you
-# want a much faster, smaller install and don't plan to use StarDist.
-stardist
-tensorflow
+# NOTE: stardist + tensorflow were removed (July 2026). Nothing in the current
+# pipeline (K-means + distance-transform watershed) uses them, and they were the
+# main reason first-time setup was slow (~5-10 min, ~1 GB) and failed on some
+# machines (no TensorFlow wheels for newer Python versions). If StarDist-based
+# detection is ever added, re-add:  stardist  and  tensorflow
