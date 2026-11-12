@@ -76,9 +76,7 @@ fi
 # =============================================================================
 # STEP 2 — Python 3.11
 #
-#  TensorFlow 2.x officially supports Python 3.8–3.11.
-#  Python 3.12+ does NOT have stable TensorFlow wheels yet.
-#  We therefore require Python 3.11 specifically.
+#  Use Python 3.11 for the launcher-managed environment.
 # =============================================================================
 step "Step 2/4: Checking Python 3.11"
 
@@ -125,7 +123,7 @@ PYTHON_CMD="$(find_python311)"
 
 # If still not found, install via Homebrew then retry
 if [ -z "$PYTHON_CMD" ]; then
-    warn "Python 3.11 not found. Installing via Homebrew (needed for TensorFlow)..."
+    warn "Python 3.11 not found. Installing via Homebrew..."
     brew install python@3.11
     PYTHON_CMD="$(find_python311)"
 fi
@@ -170,84 +168,19 @@ needs_python_packages() {
     "$VENV_PYTHON" - <<'PY' &>/dev/null
 import importlib
 
-for name in ("fastapi", "uvicorn", "tensorflow", "numpy", "cv2", "stardist"):
+for name in ("fastapi", "uvicorn", "multipart", "numpy", "cv2", "skimage",
+             "scipy", "ncempy", "matplotlib", "pandas", "PIL", "pytesseract",
+             "tifffile", "openpyxl", "h5py"):
     importlib.import_module(name)
 PY
 }
 
-install_tensorflow_with_fallback() {
-    local tf_spec="tensorflow==2.21.0"
-
-    info "Installing TensorFlow..."
-    if "$VENV_PYTHON" -m pip install "$tf_spec"; then
-        return 0
-    fi
-
-    warn "pip could not resolve tensorflow from the package index."
-    warn "Retrying TensorFlow install directly from PyPI..."
-    PIP_CONFIG_FILE=/dev/null "$VENV_PYTHON" -m pip install --index-url https://pypi.org/simple "$tf_spec" && return 0
-
-    return 1
-}
-
 # Check whether a first-time install is needed
 if ! needs_python_packages; then
-    info "Installing Python packages — this may take 5–10 minutes on first run."
-    info "Please do NOT close this window."
-
-    # Upgrade pip / setuptools silently
+    info "Installing Python packages..."
     "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet
-
-    # ── TensorFlow first (sets numpy version constraint everything else must follow) ──
-    #
-    #  tensorflow-macos was deprecated at 2.13 and forces numpy<2, which conflicts
-    #  with opencv-python-headless >=4.9 and ncempy >=1.15 (both require numpy>=2).
-    #
-    #  tensorflow >= 2.16 ships a universal wheel that runs natively on Apple
-    #  Silicon (M-series) without a separate macos fork, and is compatible with
-    #  numpy 2.x.  tensorflow-metal is still the GPU-acceleration plugin for M-chips.
-    if ! install_tensorflow_with_fallback; then
-        error "TensorFlow installation failed."
-        error "This is usually a package-index or network issue, not a RodSizer code issue."
-        if [ "$IS_APPLE_SILICON" = true ]; then
-            error "If needed, try this manually inside backend/.venv:"
-            error "  python -m pip install --index-url https://pypi.org/simple tensorflow==2.21.0"
-        else
-            error "Try rerunning later, or install TensorFlow manually inside backend/.venv."
-        fi
-        echo "Press Enter to close..."; read -r; exit 1
-    fi
-
-    # Note: tensorflow-metal is NOT installed because v1.2.0 is incompatible
-    # with tensorflow >=2.16 (dlopen fails on _pywrap_tensorflow_internal.so).
-    # Modern TensorFlow already runs natively on Apple Silicon without it.
-
-    if ! "$VENV_PYTHON" -c "import tensorflow" &>/dev/null 2>&1; then
-        error "TensorFlow import failed after installation."
-        error "Try deleting backend/.venv and relaunching, or check network connectivity."
-        echo "Press Enter to close..."; read -r; exit 1
-    fi
-
-    # ── Remaining packages (numpy version is now fixed by TF above) ─────────────
-    TMP_REQ=$(mktemp /tmp/rodsizer_req_XXXX.txt)
-    grep -v "^tensorflow" "$BACKEND_DIR/requirements.txt" > "$TMP_REQ"
-
-    if ! "$VENV_PYTHON" -m pip install -r "$TMP_REQ" --quiet; then
-        error "Failed to install some packages. Check the output above."
-        rm -f "$TMP_REQ"
-        echo "Press Enter to close..."; read -r; exit 1
-    fi
-    rm -f "$TMP_REQ"
-
-    # ── Verify tensorflow is importable ───────────────────────────────────────
-    if ! "$VENV_PYTHON" -c "import tensorflow" &>/dev/null 2>&1; then
-        error "TensorFlow installation failed."
-        error "Try running this manually inside the venv:"
-        if [ "$IS_APPLE_SILICON" = true ]; then
-            error "  python -m pip install --index-url https://pypi.org/simple tensorflow==2.21.0"
-        else
-            error "  python -m pip install tensorflow==2.21.0"
-        fi
+    if ! "$VENV_PYTHON" -m pip install -r "$BACKEND_DIR/requirements.txt"; then
+        error "Package installation failed; see the pip output above."
         echo "Press Enter to close..."; read -r; exit 1
     fi
 
