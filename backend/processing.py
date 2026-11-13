@@ -44,14 +44,13 @@ def save_results_to_excel(results, output_path):
 
 def calculate_volume(length_nm, width_nm):
     """
-    Calculate volume of a hemispherically capped cylinder (nanorod).
-    V = pi * r^2 * (L - 2r) + 4/3 * pi * r^3
-    where r = width / 2
+    Estimate nanorod volume in nm³ from length and width in nm.
+
+    Use a cylinder with two hemispherical caps:
+    V = pi * r² * max(0, L - 2r) + 4/3 * pi * r³, with r = width / 2.
     """
     r = width_nm / 2.0
-    # If rod is very short (L < W), treat as sphere or prolate spheroid? 
-    # Standard formula assumes L >= W. If L < W, it's not a rod.
-    # We'll clamp L-2r to 0 if L < 2r (though physically L should be > W for a rod)
+    # For length <= width, retain the spherical caps and use zero cylinder height.
     cyl_height = max(0, length_nm - width_nm)
     
     v_cyl = np.pi * (r**2) * cyl_height
@@ -286,7 +285,7 @@ def process_image(
     requested_bar_length_nm: float = None,
     binary_mask_tune: int = 0
 ):
-    # Default to 200nm if not specified, as per user request to "have blue line as 200 nm"
+    # Use a 200 nm display scale bar unless the caller supplies a length.
     if requested_bar_length_nm is None:
         requested_bar_length_nm = 200.0
 
@@ -375,28 +374,24 @@ def process_image(
     
 
     
-    # 3. Preprocessing & Segmentation (AutoDetect-mNP)
-    # User requested "Option 4": AutoDetect-mNP (K-means + rUECS)
+    # Segment the foreground, then split low-solidity regions with watershed.
     
     # Step 1: K-means Segmentation
-    # This replaces Adaptive Thresholding
     binary_mask_tune = int(np.clip(binary_mask_tune, -6, 6))
     binary = image_kmeans(img, separation_strength=binary_mask_tune)
     
-    # MASKING SCALE BAR (Fix for "detecting rods near scale")
+    # Exclude the scale bar and its label from particle detection.
     # image_kmeans already masks common camera footer strips; keep explicit
     # scale-bar coordinates honored when metadata/detection supplies them.
     if calibration_info.get("scale_bar_coords"):
         x1, y1, x2, y2 = calibration_info["scale_bar_coords"]
-        # Mask out a slightly larger box around the line
-        # The text is usually above the line.
-        # Let's mask a box from y1-50 to y2+20 (approx)
+        # Include 120 px above the line for its label and 40 px on the other sides.
         h_img, w_img = binary.shape
         
         # Safety bounds
-        mask_y1 = max(0, y1 - 120) # Assume text is above (increased to 120px for large text)
-        mask_y2 = min(h_img, y2 + 40) # Increased bottom margin too
-        mask_x1 = max(0, x1 - 40) # Wider margin
+        mask_y1 = max(0, y1 - 120)
+        mask_y2 = min(h_img, y2 + 40)
+        mask_x1 = max(0, x1 - 40)
         mask_x2 = min(w_img, x2 + 40)
         
         # Set to False (Background)
@@ -419,11 +414,8 @@ def process_image(
         minr, minc, maxr, maxc = region.bbox
         label_crop = split_labels[minr:maxr, minc:maxc]
 
-        # Solidity > 0.9 is treated as a single rod ("simple"); lower values are
-        # treated as clumps and separated with a distance-transform watershed
-        # (autodetect_utils.split_clump). Watershed keeps a single elongated rod
-        # whole while breaking touching rods apart, and is far faster than the
-        # recursive rUECS erosion it replaces.
+        # Keep regions with solidity > 0.9 whole. Split the remaining regions
+        # using distance-transform maxima as watershed seeds.
         if region.solidity > 0.9:
             label_crop[region.image] = next_label
             next_label += 1
@@ -439,8 +431,6 @@ def process_image(
 
     labels = split_labels
 
-    # ... (post-processing comments) ...
-    
     # 5. Measurement & Filtering
     candidates = []
     output_image = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -483,7 +473,7 @@ def process_image(
         if area_px < min_size_px:
             continue
 
-        # Fit Rotated Rectangle (User preference for "edges")
+        # Measure the particle's rotated bounding rectangle.
         rect = cv2.minAreaRect(cnt_local)
         (center, (w_rect, h_rect), angle_rect) = rect
 
@@ -620,8 +610,6 @@ def process_image(
         return name
 
     clean_name = get_clean_filename(image_path)
-    # Removed drawing filename on image as requested
-    
     # Draw Scale Bar Verification
     scale_drawn = False
     has_real_scale = bool(pixel_size_nm) and not calibration_info.get("is_placeholder")
@@ -672,7 +660,7 @@ def process_image(
             
         bar_width_px = int(bar_length_nm / pixel_size_nm)
         
-        # Position: Bottom Left (User requested specific area, using safe bottom-left)
+        # Place the scale bar at the bottom left with a fixed margin.
         x1 = 128
         if x1 + bar_width_px > w: x1 = 20 # Safety check
         x2 = x1 + bar_width_px

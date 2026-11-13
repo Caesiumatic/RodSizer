@@ -30,7 +30,7 @@ Open <http://127.0.0.1:8000>.
 
 ## Docker
 
-The Docker entry point now lives with the main application:
+Build and run the application from the repository root:
 
 ```bash
 docker build -t rodsizer .
@@ -40,8 +40,8 @@ docker run --rm -p 127.0.0.1:8000:8000 \
 ```
 
 The named volumes retain images and results between runs. This configuration
-serves one local workspace. The older `RodSizer_web` application uses a
-different temporary-session model; its backend has not been merged into this one.
+serves one local workspace. `RodSizer_web` is a separate application with a
+temporary-session model.
 
 ## Data and measurement settings
 

@@ -1,15 +1,15 @@
 # RodSizer Parameter Guide
 
-This guide explains the main processing parameters that are currently active in RodSizer.
+Use this guide to choose calibration and separation settings and interpret the resulting measurements.
 
-## Current Detection Flow
+## Detection flow
 
-The current backend uses an AutoDetect-mNP-style workflow in `backend/processing.py`:
+The backend uses an AutoDetect-mNP-style workflow in `backend/processing.py`:
 
 1. `K-means segmentation` separates foreground particles from background.
 2. `Scale bar masking` removes the scale bar area so it is not detected as a particle.
 3. `Solidity-based split logic` decides whether an object is treated as a single particle (solidity > 0.9) or sent to clump splitting.
-4. `Clump splitting` separates touching/overlapping particles with a marker-controlled **watershed on the Euclidean distance transform** (`autodetect_utils.split_clump`). Seeds are extended (h-)maxima of the distance map, so a single elongated rod stays whole while touching rods split at the neck. This replaced the older recursive-erosion (`rUECS`) path, which was slow and tended to leave dense aggregates fused into one large blob. `rUECS`/`dilmarkers` remain in the codebase as reference but are no longer on the hot path.
+4. `Clump splitting` separates connected regions with a marker-controlled **watershed on the Euclidean distance transform** (`autodetect_utils.split_clump`). Extended (h-)maxima define the particle seeds; the separation slider adjusts the depth needed to distinguish neighboring peaks. Inspect the overlay to confirm the resulting boundaries. The legacy `rUECS` and `dilmarkers` functions remain in the source; `process_image` uses `split_clump`.
 5. `Measurement` uses `minAreaRect` to estimate rod length and width, then derives shape descriptors per particle.
 6. `Label overlay` assigns each detected particle its own colour (`_make_label_overlay`) so the per-particle segmentation can be inspected directly.
 
@@ -20,16 +20,16 @@ RodSizer resolves nm/pixel in this order; the first that succeeds wins:
 1. **Manual override** (`manual_pixel_size`) — or the in-app "draw a line" / numeric calibration.
 2. **Linked metadata file** — a matching `.dm3/.dm4/.emd` sharing the image's base name.
 3. **Embedded metadata** — Gatan/DM, Velox/EMD, OME-TIFF, FEI/Thermo and ImageJ TIFF tags.
-4. **Burned-in OCR (new)** — for camera exports (JPG/PNG/TIF) with no metadata, RodSizer OCRs the bottom metadata footer for `Pixel size … pm/nm` (cross-checked against `Fov … / image width`), and falls back to a drawn scale bar plus its `… nm` label. Requires the Tesseract binary (installed automatically by the launchers); if it is missing, this step is skipped silently.
-5. **Uncalibrated placeholder** — `1.0 nm/px`, flagged `is_placeholder`, so measurements stay in a known-provisional state until you calibrate.
+4. **Burned-in OCR** — for camera exports (JPG/PNG/TIF) with no metadata, RodSizer reads explicit pixel-size values in pm or estimates scale from the footer field of view divided by image width. It cross-checks the estimates when both are present and falls back to a drawn scale bar and its label. OCR requires Tesseract; see the [installation guide](docs/usage.md). If Tesseract is unavailable, OCR is skipped.
+5. **Uncalibrated placeholder** — `1.0 nm/px`, flagged `is_placeholder`. Set a measured pixel size before interpreting the reported nanometer dimensions.
 
-## Parameters Currently In Use
+## Active parameters
 
 | Parameter | Current Value / Behavior | What it does |
 | :--- | :--- | :--- |
 | `requested_bar_length_nm` | `200.0` nm default | Draws a synthetic blue scale bar if a real calibration is available and no override is given. |
 | `manual_pixel_size` | Optional user override | Replaces metadata-based calibration when supplied. |
-| `min_area_nm2` | `30` nm^2 | Rejects very small objects as noise before and after segmentation. |
+| `min_area_nm2` | `30` nm², with a floor of `500` pixels | Sets `min_size_px = max(500, int(30 / pixel_size_nm²))`; regions and measured contours below that area are rejected. |
 | `region.solidity > 0.9` | Active | Treats highly convex objects as simple particles; lower-solidity objects are treated as clumps and split with the distance-transform watershed. |
 | `binary_mask_tune` (separation slider) | `-6 .. +6`, default `0` | Drives both binarisation morphology (closing vs opening) and clump-splitting aggressiveness (watershed seed depth `h`). Higher = separate more; lower = merge more. |
 | Overlap threshold | `0.15` | Used during non-maximum suppression to skip heavily overlapping duplicate detections. |
@@ -50,9 +50,9 @@ These values are computed for each accepted particle:
 - `circularity`
 - `eccentricity`
 
-Important: in the current code, `aspect_ratio`, `solidity`, and `circularity` are mainly measurement/classification descriptors. They are not user-facing manual filter knobs in the current workflow.
+`aspect_ratio`, `solidity`, and `circularity` describe the measured particles. The interface exposes calibration and separation controls; these descriptors are not manual filter controls.
 
-## Parameters No Longer Used As Manual Controls
+## Legacy parameters
 
 The following items described in older documentation are not active as manual tuning parameters in the current `process_image` workflow:
 
@@ -72,7 +72,7 @@ The following items described in older documentation are not active as manual tu
 
 ### 2. Solidity Split Threshold (`region.solidity > 0.9`)
 - High-solidity objects are treated as single particles.
-- Lower-solidity objects are assumed to be clumps or irregular shapes and are sent to `rUECS`.
+- Objects at or below the solidity threshold are sent to the distance-transform watershed in `split_clump`.
 - Increasing this threshold makes the app split more borderline shapes as clumps.
 - Decreasing this threshold makes the app keep more irregular shapes as single objects.
 
@@ -88,8 +88,4 @@ The following items described in older documentation are not active as manual tu
 
 ## Where To Adjust These Parameters
 
-If you want to change the current defaults, look in:
-
-- [backend/processing.py](backend/processing.py)
-
-The main place to inspect is the `process_image(...)` function.
+Edit the defaults in `process_image(...)` in [backend/processing.py](backend/processing.py).

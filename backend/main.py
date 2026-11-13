@@ -264,10 +264,7 @@ async def delete_folder(folder_name: str):
         # Delete folder and contents
         shutil.rmtree(folder_path)
         
-        # Also clean up results for images that were in this folder?
-        # Since we don't strictly track which result belongs to which folder in the filename (only ID),
-        # this is tricky unless we scan the deleted files.
-        # For now, let's just delete the upload folder. Orphaned results are harmless but take space.
+        # Results remain on disk: their filenames identify images, not folders.
         
         return {"status": "success", "message": "Folder deleted"}
     except HTTPException:
@@ -473,8 +470,7 @@ async def upload_images(background_tasks: BackgroundTasks, folder: str = Form(No
                         )
                     buffer.write(chunk)
             
-            # 1. Generate Immediate Preview (Sync)
-            # This ensures the user sees something right away
+            # Generate the preview before queuing background image analysis.
             _processing_function("generate_preview")(file_path, RESULTS_DIR)
             
             uploaded_files.append({

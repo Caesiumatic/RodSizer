@@ -425,9 +425,7 @@ def dilmarkers(markers, original_shape):
             
         dilated_markers.append(dilated)
         
-    # We mainly need the dilated markers list
-    # Constructing overlay omitted for speed unless needed, but returning dummy if needed
-    # The user code might check return tuple.
+    # Preserve the two-item return contract; bg_image contains no marker overlay.
 
     return dilated_markers, bg_image # returning image as overlay placeholder
 
@@ -437,16 +435,13 @@ def split_clump(crop_bool, min_marker_area, separation_strength=0):
     Split a fused / low-solidity binary region into individual convex particles
     using a marker-controlled watershed on the Euclidean distance transform.
 
-    This is the primary clump separator. Compared with recursive erosion
-    (``ruecs``) it is far faster (the heavy steps are C-implemented) and more
-    robust on dense nanorod aggregates, because seeds are extended (h-) maxima of
-    the distance map: the whole ridge of one elongated rod collapses to a single
-    regional maximum, so a single rod is NOT cut into pieces, while two touching
-    rods separated by a neck become two seeds.
+    This is the clump separator used by ``process_image``. Extended (h-)maxima
+    of the smoothed distance map define the seeds. The h threshold suppresses
+    shallow peaks along rods while retaining peaks separated by deeper valleys.
 
     Args:
         crop_bool: 2-D boolean array — one connected component (the clump).
-        min_marker_area: discard watershed basins smaller than this (px).
+        min_marker_area: discard watershed basins smaller than this area (pixels).
         separation_strength: -6..+6. Higher = split more aggressively
             (more seeds); lower = merge more. 0 is the balanced default.
 
